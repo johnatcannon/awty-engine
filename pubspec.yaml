@@ -24,12 +24,7 @@ topics:
   - step-tracking
   - fitness
   - health
-  - walking
   - background-service
-  - notifications
-  - goals
-  - android
-  - health-connect
   - flutter-plugin
 
 environment:
