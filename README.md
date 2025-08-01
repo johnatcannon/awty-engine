@@ -9,6 +9,12 @@
 
 AWTY Engine is a **community-driven, open source Flutter package** that provides **pure step counting and goal notification services** for any Flutter application. AWTY solves a common problem: reliably notifying users when they have taken a specific number of additional steps, even if the application is in the background, the device is asleep, or the app is killed.
 
+### The Story Behind the Name
+
+AWTY stands for **"Are We There Yet?"** - a phrase that brings back memories of countless family road trips where kids would repeatedly ask their parents this question. Just like those journeys, walking and fitness goals are about progress, patience, and reaching your destination.
+
+AWTY is designed to be a service that enables walking and fitness-related games to encourage a healthier lifestyle in a fun manner. By gamifying physical activity, we hope to make fitness more engaging and accessible to everyone, turning the journey toward health goals into an enjoyable adventure rather than a chore.
+
 ### Core Philosophy: Decoupling and Reusability
 
 The engine is designed to be completely decoupled from any specific application's logic, UI, or analytics. Its sole responsibility is to count steps and report when a goal is met, firing a generic notification. This makes it a highly reliable tool that can be easily integrated into various projects (fitness apps, walking games, health trackers, etc.) with minimal maintenance.
@@ -45,6 +51,21 @@ The engine is designed to be completely decoupled from any specific application'
 **Note**: As of this first release, AWTY Engine does **not yet support iOS devices**. 
 
 I recently got my iPhone and plan to implement iOS support using HealthKit background delivery. This will be added in a future release through community contributions.
+
+## Testing Features
+
+### 🧪 Test Mode - Coming Soon!
+AWTY Engine will soon include a **test mode** feature to make development and testing easier. When test mode is enabled, AWTY will automatically reach the goal after 60 seconds, regardless of the actual number of steps taken.
+
+This feature will be particularly useful for:
+- **Development**: Test goal completion without walking
+- **Debugging**: Verify notification and callback systems
+- **Demos**: Show functionality without requiring physical activity
+- **UI Testing**: Test app responses to goal completion
+
+The test mode will maintain the same API interface, simply adding an optional `testMode` parameter to the `startStepTracking()` method. This ensures backward compatibility while providing a powerful testing tool for developers.
+
+**Implementation Status**: Test mode is planned and designed. See the [Test Mode Specification](docs/__Test-Mode.md) for detailed implementation plans.
 
 ## Installation
 
