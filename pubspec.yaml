@@ -4,10 +4,8 @@ description: "Are We There Yet? Engine - A reliable, decoupled step tracking eng
 version: 0.0.2+1
 
 homepage: https://gamesafoot.co
-author: John Cannon <john@cannon.cc>
 repository: https://github.com/johnatcannon/awty-engine
 documentation: https://github.com/johnatcannon/awty-engine/blob/main/README.md
-issue_tracker: https://github.com/johnatcannon/awty-engine/issues
 issue_tracker: https://github.com/johnatcannon/awty-engine/issues
 
 keywords:
