@@ -9,6 +9,8 @@
 
 AWTY Engine is a **community-driven, open source Flutter package** that provides **pure step counting and goal notification services** for any Flutter application. AWTY solves a common problem: reliably notifying users when they have taken a specific number of additional steps, even if the application is in the background, the device is asleep, or the app is killed.
 
+**Website**: [GamesAfoot.co](https://gamesafoot.co) | **GitHub**: [awty-engine](https://github.com/johnatcannon/awty-engine) | **Contact**: [john@cannon.cc](mailto:john@cannon.cc)
+
 ### The Story Behind the Name
 
 AWTY stands for **"Are We There Yet?"** - a phrase that brings back memories of countless family road trips where kids would repeatedly ask their parents this question. Just like those journeys, walking and fitness goals are about progress, patience, and reaching your destination.

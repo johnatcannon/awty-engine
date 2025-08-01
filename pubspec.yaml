@@ -1,12 +1,13 @@
 name: awty_engine
 description: "Are We There Yet? Engine - A reliable, decoupled step tracking engine for Flutter applications. Provides pure step counting and goal notification services for fitness apps, walking games, health trackers, and more."
-publish_to: 'none'  # Change to 'none' to prevent accidental publishing, remove this line when ready to publish
 
 version: 0.0.2+1
 
-homepage: https://github.com/johnatcannon/awty-engine
+homepage: https://gamesafoot.co
+author: John Cannon <john@cannon.cc>
 repository: https://github.com/johnatcannon/awty-engine
 documentation: https://github.com/johnatcannon/awty-engine/blob/main/README.md
+issue_tracker: https://github.com/johnatcannon/awty-engine/issues
 issue_tracker: https://github.com/johnatcannon/awty-engine/issues
 
 keywords:
