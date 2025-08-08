@@ -1,4 +1,5 @@
 /// AWTY Engine (Are We There Yet?)
+///
 /// Minimal, decoupled step-delta notifier for use in Agatha, WalkWise, etc.
 /// See docs/__AWTY-Spec.md for details.
 ///
@@ -7,16 +8,25 @@
 /// - Removed custom notifications, sounds, and vibrations (handled by calling application)
 /// - Moved from Health Connect to `pedometer` package for step counting
 /// - Updated API to use `AwtyIntegration` class for better integration
+library awty_engine;
 
 import 'package:flutter/services.dart';
 
 /// Service for integrating with the AWTY Engine
+///
+/// This class provides a high-level interface for integrating with the AWTY Engine.
+/// It handles platform channel communication and provides callback mechanisms
+/// for goal completion, errors, and permission issues.
 class AwtyIntegration {
   static const MethodChannel _channel = MethodChannel('awty_engine');
 
-  // Callback functions
+  /// Callback function called when a goal is reached
   static VoidCallback? onGoalReached;
+
+  /// Callback function called when an error occurs
   static Function(String)? onError;
+
+  /// Callback function called when permissions are denied
   static Function(String)? onPermissionDenied;
 
   /// Initialize AWTY integration and set up platform channel handlers
@@ -118,6 +128,11 @@ class AwtyIntegration {
 }
 
 /// Legacy AwtyEngine class for backward compatibility
+///
+/// This class provides backward compatibility for existing code that uses
+/// the old AwtyEngine API. All methods are deprecated and should be replaced
+/// with AwtyIntegration equivalents.
+///
 /// @deprecated Use AwtyIntegration instead
 @Deprecated('Use AwtyIntegration instead')
 class AwtyEngine {

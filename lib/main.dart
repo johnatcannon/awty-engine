@@ -1,7 +1,10 @@
+/// Main entry point for the AWTY Engine example app.
+///
+/// This is a simple demonstration of the AWTY Engine capabilities.
+library awty_engine_main;
+
 import 'package:flutter/material.dart';
 
-/// Main entry point for the AWTY Engine example app.
-/// This is a simple demonstration of the AWTY Engine capabilities.
 void main() {
   runApp(const MyApp());
 }
