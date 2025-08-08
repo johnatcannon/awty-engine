@@ -24,30 +24,33 @@ The engine is designed to be completely decoupled from any specific application'
 ## Features
 
 ### ✅ What AWTY Does:
-- Counts steps using Health Connect (Android) / HealthKit (iOS, future)
+- Counts steps using the `pedometer` package (Android & iOS)
 - Tracks progress toward step goals (e.g., "walk 1000 more steps")  
-- Fires generic notifications when goals are reached
+- Sends immediate `goalReached` callbacks to the calling application
 - Persists goal state across app restarts and device reboots
-- Runs reliably in the background via foreground service
-- Handles daily step count resets (midnight rollover)
+- Runs reliably in the background via Android foreground service
+- Handles system boot step count resets (not midnight rollover)
 - Prevents negative step counts through baseline management
+- Provides required Android foreground service notification
 
 ### ❌ What AWTY Does NOT Do:
 - Know anything about your app's purpose, UI, or business logic
 - Handle app-specific navigation, rewards, or user messaging
 - Store or process any data beyond step counts and goal status
-- Customize notifications beyond the generic "Goal reached!" message
+- Provide custom notifications, sounds, or vibrations (handled by calling app)
 - Integrate with analytics, user accounts, or cloud services
+- Handle user-facing notifications beyond the required Android foreground service
 
 **Host applications handle everything beyond step counting**: UI updates, game logic, user rewards, analytics, navigation, and app-specific messaging.
 
 ## Current Status
 
 ### ✅ Android Support
-- **Fully implemented** with Health Connect API
+- **Fully implemented** with `pedometer` package
 - Native Android foreground service for reliable background operation
 - Comprehensive step tracking with goal management
-- Generic notifications with distinctive vibration patterns
+- Immediate `goalReached` callbacks via platform channel
+- Required foreground service notification for background operation
 
 ### 📱 iOS Support - Coming Soon!
 **Note**: As of this first release, AWTY Engine does **not yet support iOS devices**. 
@@ -56,18 +59,18 @@ I recently got my iPhone and plan to implement iOS support using HealthKit backg
 
 ## Testing Features
 
-### 🧪 Test Mode - Coming Soon!
-AWTY Engine will soon include a **test mode** feature to make development and testing easier. When test mode is enabled, AWTY will automatically reach the goal after 60 seconds, regardless of the actual number of steps taken.
+### 🧪 Test Mode - Available Now!
+AWTY Engine includes a **test mode** feature to make development and testing easier. When test mode is enabled, AWTY will automatically reach the goal after 60 seconds, regardless of the actual number of steps taken.
 
-This feature will be particularly useful for:
+This feature is particularly useful for:
 - **Development**: Test goal completion without walking
 - **Debugging**: Verify notification and callback systems
 - **Demos**: Show functionality without requiring physical activity
 - **UI Testing**: Test app responses to goal completion
 
-The test mode will maintain the same API interface, simply adding an optional `testMode` parameter to the `startStepTracking()` method. This ensures backward compatibility while providing a powerful testing tool for developers.
+Test mode maintains the same API interface, simply adding an optional `testMode` parameter to the `startStepTracking()` method. This ensures backward compatibility while providing a powerful testing tool for developers.
 
-**Implementation Status**: Test mode is planned and designed. See the [Test Mode Specification](docs/__Test-Mode.md) for detailed implementation plans.
+**Implementation Status**: ✅ **Fully implemented and tested**
 
 ## Installation
 
@@ -75,26 +78,22 @@ Add AWTY Engine to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  awty_engine: ^0.0.2
+  awty_engine: ^0.1.0
 ```
 
 ## Quick Start
 
-### 1. Initialize Global Notification Service
+### 1. Initialize AWTY Integration
 
 ```dart
 // In main.dart or app initialization
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize AWTY integration
+  await AwtyIntegration.initialize();
+  
   runApp(MyApp());
-}
-
-class MyApp extends StatefulWidget {
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    AwtyNotificationService.initialize(context);
-  }
 }
 ```
 
@@ -102,42 +101,40 @@ class MyApp extends StatefulWidget {
 
 ```dart
 // Start tracking 1000 additional steps
-await AwtyEngine.startStepTracking(
+await AwtyIntegration.startStepTracking(
   deltaSteps: 1000,  // Notify when 1000 more steps are taken
   goalId: 'unique_goal_id',
-  appName: 'MyApp',  // App name for generic notifications
+  appName: 'MyApp',  // App name for notifications
 );
 ```
 
-### 3. Monitor Progress
+### 3. Handle Goal Completion
+
+```dart
+// Set up goal completion callback
+AwtyIntegration.onGoalReached = (String goalId) {
+  // Handle goal completion
+  print('Goal reached: $goalId');
+  // Update UI, show celebration, etc.
+};
+
+// Set up error callback
+AwtyIntegration.onError = (String error) {
+  print('AWTY error: $error');
+  // Handle errors
+};
+```
+
+### 4. Monitor Progress (Optional)
 
 ```dart
 // Monitor progress with timers
 Timer.periodic(Duration(seconds: 5), (_) async {
-  final progress = await stepTrackingService.getCurrentProgress();
-  updateUI(progress['stepsTaken'], progress['stepsRemaining']);
+  final progress = await AwtyIntegration.getCurrentProgress();
+  if (progress != null) {
+    updateUI(progress.stepsTaken, progress.stepsRemaining);
+  }
 });
-```
-
-### 4. Handle Goal Completion
-
-```dart
-// Global notification service handles this automatically
-class AwtyNotificationService {
-  static void initialize(BuildContext context) {
-    const MethodChannel channel = MethodChannel('awty_engine');
-    channel.setMethodCallHandler((call) async {
-      if (call.method == 'goalReached') {
-        await _handleGoalReached();
-      }
-    });
-  }
-  
-  static Future<void> _handleGoalReached() async {
-    // Handle goal completion from any page
-    // Update game state, navigate to appropriate page, etc.
-  }
-}
 ```
 
 ## Use Cases
@@ -190,16 +187,11 @@ Add required permissions to `android/app/src/main/AndroidManifest.xml`:
 
 ```xml
 <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
-<uses-permission android:name="android.permission.health.READ_STEPS" />
 <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-<uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
 <uses-permission android:name="android.permission.WAKE_LOCK" />
-<uses-permission android:name="android.permission.VIBRATE" />
-
-<queries>
-  <package android:name="com.google.android.apps.healthdata" />
-</queries>
 ```
+
+**Note**: AWTY uses the `pedometer` package which handles step counting through device sensors, so Health Connect permissions are not required.
 
 ## About GamesAfoot.co
 

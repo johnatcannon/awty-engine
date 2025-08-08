@@ -5,18 +5,15 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.os.CountDownTimer
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
-import androidx.health.connect.client.HealthConnectClient
-import androidx.health.connect.client.permission.HealthPermission
-import androidx.health.connect.client.records.StepsRecord
-import androidx.health.connect.client.request.ReadRecordsRequest
-import androidx.health.connect.client.time.TimeRangeFilter
 import kotlinx.coroutines.*
+import org.json.JSONObject
 import java.time.ZonedDateTime
 import java.util.*
 import java.io.File
@@ -25,7 +22,6 @@ class AwtyStepService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1001
         private const val CHANNEL_ID = "awty_foreground_channel"
-        private const val MILESTONE_CHANNEL_ID = "awty_milestone_channel"
         private const val prefsName = "awty_prefs"
         
         private var platformChannel: AwtyPlatformChannel? = null
@@ -52,23 +48,24 @@ class AwtyStepService : Service() {
     private var current: Int = 0
     private var goalId: String? = null
     private var appName: String = "Unknown App"
+    private var testMode: Boolean = false  // New field
+    private var testModeTimer: CountDownTimer? = null  // Timer for test mode
     private var timer: Timer? = null
-    private var hasStartedPolling: Boolean = false
+    // hasStartedPolling variable - REMOVED (no longer used with platform channel approach)
     private var pollingWakeLock: android.os.PowerManager.WakeLock? = null
-    private lateinit var healthConnectClient: HealthConnectClient
     private lateinit var powerManager: PowerManager
     private lateinit var packageManager: android.content.pm.PackageManager
     private lateinit var packageName: String
     private lateinit var prefs: android.content.SharedPreferences
     private var segmentStartDate: String = ""
     private var stepsAccumulated: Int = 0
+    private var isForegroundService: Boolean = false
 
     override fun onCreate() {
         super.onCreate()
         Log.d("AWTY_SERVICE", "onCreate called")
         writeToLogFile(this, "SERVICE_CREATED")
         
-        healthConnectClient = HealthConnectClient.getOrCreate(this)
         powerManager = getSystemService(POWER_SERVICE) as PowerManager
         packageManager = getPackageManager()
         packageName = getPackageName()
@@ -85,12 +82,147 @@ class AwtyStepService : Service() {
         Log.d("AWTY_SERVICE", "onStartCommand called")
         writeToLogFile(this, "SERVICE_STARTED")
         
-        deltaSteps = intent?.getIntExtra("deltaSteps", 1000) ?: 1000
-        goalId = intent?.getStringExtra("goalId") ?: UUID.randomUUID().toString()
-        appName = intent?.getStringExtra("appName") ?: "Unknown App"
+        // Check if this is a service restart after goal completion
+        val intentGoalId = intent?.getStringExtra("goalId")
+        val goalId = if (intentGoalId != null) {
+            intentGoalId
+        } else {
+            // Try to get the last active goalId from SharedPreferences
+            prefs.getString("lastGoalId", null) ?: UUID.randomUUID().toString()
+        }
         
-        Log.d("AWTY_SERVICE", "onStartCommand: deltaSteps=$deltaSteps, goalId=$goalId, appName=$appName")
-        writeToLogFile(this, "SERVICE_CONFIG: deltaSteps=$deltaSteps, goalId=$goalId, appName=$appName")
+        // IMMEDIATE CHECK: Always check for recently completed goals regardless of intent
+        Log.d("AWTY_SERVICE", "CHECKING_FOR_RECENT_GOALS: intentGoalId=$intentGoalId, action=${intent?.action}")
+        writeToLogFile(this, "CHECKING_FOR_RECENT_GOALS: intentGoalId=$intentGoalId, action=${intent?.action}")
+        
+        // Check if there's any recently completed goal (within the last 5 minutes) regardless of goalId
+        val allKeys = prefs.all.keys.filter { it.startsWith("goalReachedTime_") }
+        for (key in allKeys) {
+            val timeStr = prefs.getString(key, null)
+            if (timeStr != null) {
+                try {
+                    val reachedTime = ZonedDateTime.parse(timeStr)
+                    val now = ZonedDateTime.now()
+                    val minutesSinceReached = java.time.Duration.between(reachedTime, now).toMinutes()
+                    
+                    if (minutesSinceReached < 5) { // Within the last 5 minutes
+                        val recentGoalId = key.removePrefix("goalReachedTime_")
+                        Log.d("AWTY_SERVICE", "SERVICE_RESTART_PREVENTED: Recent goal completed for goalId=$recentGoalId (${minutesSinceReached}m ago)")
+                        writeToLogFile(this, "SERVICE_RESTART_PREVENTED: Recent goal completed for goalId=$recentGoalId (${minutesSinceReached}m ago)")
+                        stopSelf()
+                        return START_NOT_STICKY
+                    }
+                } catch (e: Exception) {
+                    Log.e("AWTY_SERVICE", "Error parsing recent goal time: $e")
+                }
+            }
+        }
+        
+        // Check if the specific goalId was reached recently
+        val goalReached = prefs.getBoolean("goalReached_$goalId", false)
+        val goalReachedTime = prefs.getString("goalReachedTime_$goalId", null)
+        
+        if (goalReached && goalReachedTime != null) {
+            try {
+                val reachedTime = ZonedDateTime.parse(goalReachedTime)
+                val now = ZonedDateTime.now()
+                val hoursSinceReached = java.time.Duration.between(reachedTime, now).toHours()
+                
+                if (hoursSinceReached < 1) { // Within the last hour
+                    Log.d("AWTY_SERVICE", "SERVICE_RESTART_PREVENTED: Goal already reached for goalId=$goalId (${hoursSinceReached}h ago)")
+                    writeToLogFile(this, "SERVICE_RESTART_PREVENTED: Goal already reached for goalId=$goalId (${hoursSinceReached}h ago)")
+                    stopSelf()
+                    return START_NOT_STICKY
+                }
+            } catch (e: Exception) {
+                Log.e("AWTY_SERVICE", "Error parsing goal reached time: $e")
+            }
+        }
+        
+        // Handle step count updates from platform channel
+        if (intent?.action == "UPDATE_STEP_COUNT") {
+            val stepCount = intent.getIntExtra("stepCount", 0)
+            val updateGoalId = intent.getStringExtra("goalId") ?: ""
+            
+            Log.d("AWTY_SERVICE", "UPDATE_STEP_COUNT: stepCount=$stepCount, goalId=$updateGoalId")
+            writeToLogFile(this, "UPDATE_STEP_COUNT: stepCount=$stepCount, goalId=$updateGoalId")
+            
+            // IMMEDIATELY start foreground service to prevent crash
+            if (!isForegroundService) {
+                startForegroundService()
+            }
+            
+            // Set baseline on first step count update if not set
+            if (baseline == 0) {
+                baseline = stepCount
+                Log.d("AWTY_SERVICE", "BASELINE_SET: baseline=$baseline")
+                writeToLogFile(this, "BASELINE_SET: baseline=$baseline")
+            }
+            
+            // Update current step count
+            current = stepCount
+            
+            // Check if goal is reached
+            val stepsTaken = current - baseline
+            Log.d("AWTY_SERVICE", "STEP_CHECK: current=$current, baseline=$baseline, stepsTaken=$stepsTaken, deltaSteps=$deltaSteps")
+            writeToLogFile(this, "STEP_CHECK: current=$current, baseline=$baseline, stepsTaken=$stepsTaken, deltaSteps=$deltaSteps")
+            
+            if (stepsTaken >= deltaSteps && goalId == updateGoalId) {
+                Log.d("AWTY_SERVICE", "GOAL_REACHED: stepsTaken=$stepsTaken, deltaSteps=$deltaSteps")
+                writeToLogFile(this, "GOAL_REACHED: stepsTaken=$stepsTaken, deltaSteps=$deltaSteps")
+                markGoalAsReached()
+                stopSelf()
+                return START_NOT_STICKY  // Don't restart service after goal completion
+            }
+            
+            // Calculate steps remaining and update notification
+            val stepsRemaining = deltaSteps - stepsTaken
+            writeStatusFile(stepsTaken, stepsRemaining)
+            updateForegroundNotification(stepsRemaining)
+            
+            // Save updated state
+            saveState(baseline, deltaSteps, current, true)
+            
+            return START_STICKY
+        }
+        
+        deltaSteps = intent?.getIntExtra("deltaSteps", 1000) ?: 1000
+        // goalId is already declared above
+        
+        // Persist the goalId for future service restarts
+        prefs.edit().putString("lastGoalId", goalId).apply()
+        
+        // Get app name from intent or fall back to persisted value
+        val intentAppName = intent?.getStringExtra("appName")
+        appName = if (intentAppName != null && intentAppName != "Unknown App") {
+            // Save the app name for future service restarts
+            prefs.edit().putString("appName", intentAppName).apply()
+            Log.d("AWTY_SERVICE", "APP_NAME_SAVED: '$intentAppName' to SharedPreferences")
+            writeToLogFile(this, "APP_NAME_SAVED: '$intentAppName' to SharedPreferences")
+            intentAppName
+        } else {
+            // Use persisted app name or default
+            val persistedAppName = prefs.getString("appName", "Unknown App") ?: "Unknown App"
+            Log.d("AWTY_SERVICE", "APP_NAME_LOADED: '$persistedAppName' from SharedPreferences")
+            writeToLogFile(this, "APP_NAME_LOADED: '$persistedAppName' from SharedPreferences")
+            
+            // If we're loading from SharedPreferences, make sure it's not "Unknown App"
+            if (persistedAppName == "Unknown App") {
+                Log.w("AWTY_SERVICE", "WARNING: App name is 'Unknown App' from SharedPreferences")
+                writeToLogFile(this, "WARNING: App name is 'Unknown App' from SharedPreferences")
+            }
+            
+            persistedAppName
+        }
+        
+        testMode = intent?.getBooleanExtra("testMode", false) ?: false  // Extract test mode
+        
+        // Debug intent extras
+        Log.d("AWTY_SERVICE", "Intent extras: ${intent?.extras?.keySet()?.joinToString(", ") ?: "null"}")
+        writeToLogFile(this, "Intent extras: ${intent?.extras?.keySet()?.joinToString(", ") ?: "null"}")
+        
+        Log.d("AWTY_SERVICE", "onStartCommand: deltaSteps=$deltaSteps, goalId=$goalId, appName='$appName', testMode=$testMode")
+        writeToLogFile(this, "SERVICE_CONFIG: deltaSteps=$deltaSteps, goalId=$goalId, appName='$appName', testMode=$testMode")
         
         // Clear any existing "Goal reached" notifications when starting a new goal
         clearGoalReachedNotifications()
@@ -99,46 +231,28 @@ class AwtyStepService : Service() {
         goalId?.let { prefs.edit().putBoolean("goalActive_$it", true).apply() }
         
         // Foreground service notification (should be silent)
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("$appName is tracking your steps")
-            .setContentText("Step tracking in progress")
-            .setSmallIcon(R.drawable.ic_walking_man)
-            .setColor(android.graphics.Color.WHITE) // Force white color
-            .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
-            .setSound(null)
-            .setVibrate(null)
-            .build()
-        Log.d("AWTY_SERVICE", "Calling startForeground immediately (silent notification)")
-        startForeground(NOTIFICATION_ID, notification)
+        startForegroundService()
         
-        // STEP 1: Clear old baseline and get initial step count
-        CoroutineScope(Dispatchers.IO).launch {
-            // Clear old baseline to prevent negative step counts on new segments
-            prefs.edit().remove("baseline").remove("current").remove("segmentStartDate").remove("stepsAccumulated").apply()
-            Log.d("AWTY_SERVICE", "OLD_BASELINE_CLEARED: Starting fresh segment")
-            writeToLogFile(this@AwtyStepService, "OLD_BASELINE_CLEARED: Starting fresh segment")
+        if (testMode) {
+            startTestMode()
+        } else {
+            // For platform channel approach, we don't need polling
+            // Step data comes from Flutter app via platform channel
+            Log.d("AWTY_SERVICE", "PLATFORM_CHANNEL_MODE: No polling needed, waiting for step updates from Flutter")
+            writeToLogFile(this, "PLATFORM_CHANNEL_MODE: No polling needed, waiting for step updates from Flutter")
             
-            val initialStepCount = getCurrentStepCount()
-            baseline = initialStepCount
-            current = initialStepCount
-            // Store the segment start date and reset accumulated steps
-            segmentStartDate = java.time.LocalDate.now().toString()
-            stepsAccumulated = 0
-            prefs.edit().putString("segmentStartDate", segmentStartDate).putInt("stepsAccumulated", stepsAccumulated).apply()
-            Log.d("AWTY_SERVICE", "INIT: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, segmentStartDate=$segmentStartDate")
-            writeToLogFile(this@AwtyStepService, "INIT: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, segmentStartDate=$segmentStartDate")
+            // Initialize baseline and current to 0
+            baseline = 0
+            current = 0
             
             // Save initial state
             saveState(baseline, deltaSteps, current, true)
             Log.d("AWTY_SERVICE", "STATE_SAVED: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, running=true")
-            writeToLogFile(this@AwtyStepService, "STATE_SAVED: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, running=true")
-            
-            // STEP 2: Start simple polling timer
-            startSimplePolling()
+            writeToLogFile(this, "STATE_SAVED: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, running=true")
         }
         
         Log.d("AWTY_SERVICE", "onStartCommand completed")
+        
         return START_STICKY
     }
 
@@ -149,7 +263,7 @@ class AwtyStepService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         Log.d("AWTY_SERVICE", "onDestroy called")
-        writeToLogFile(this, "SERVICE_DESTROYED: hasStartedPolling=$hasStartedPolling, deltaSteps=$deltaSteps, baseline=$baseline, current=$current")
+        writeToLogFile(this, "SERVICE_DESTROYED: deltaSteps=$deltaSteps, baseline=$baseline, current=$current")
         
         // Release polling wake lock
         pollingWakeLock?.let {
@@ -161,7 +275,112 @@ class AwtyStepService : Service() {
         }
         
         timer?.cancel()
+        testModeTimer?.cancel()  // Cancel test mode timer if running
         saveState(baseline, deltaSteps, current, false)
+    }
+
+    private fun startTestMode() {
+        Log.d("AWTY_SERVICE", "Starting TEST MODE - goal will be reached in 60 seconds")
+        writeToLogFile(this, "TEST MODE: Goal will be reached in 60 seconds regardless of steps")
+        
+        // Create a 60-second countdown timer
+        testModeTimer = object : CountDownTimer(60000, 1000) {  // 60 seconds, 1 second intervals
+            override fun onTick(millisUntilFinished: Long) {
+                val secondsRemaining = millisUntilFinished / 1000
+                Log.d("AWTY_SERVICE", "Test mode countdown: $secondsRemaining seconds remaining")
+                
+                // Update status file to show test mode progress
+                updateStatusFile(
+                    currentSteps = 0,
+                    deltaSteps = deltaSteps,
+                    baselineSteps = 0,
+                    stepsTaken = 0,
+                    stepsRemaining = deltaSteps,
+                    isRunning = true,
+                    testMode = true,
+                    testModeSecondsRemaining = secondsRemaining.toInt()
+                )
+            }
+
+            override fun onFinish() {
+                Log.d("AWTY_SERVICE", "TEST MODE: Goal reached after 60 seconds")
+                writeToLogFile(this@AwtyStepService, "TEST MODE: Goal reached after 60 seconds")
+                
+                // Mark goal as reached
+                markGoalAsReached()
+                
+                // Stop the service
+                stopSelf()
+            }
+        }.start()
+    }
+
+    private fun startNormalTracking() {
+        // Existing normal step tracking logic
+        // This is the original logic that was moved to the else block
+    }
+
+    private fun markGoalAsReached() {
+        Log.d("AWTY_SERVICE", "GOAL_REACHED: Marking goal as reached, appName='$appName'")
+        writeToLogFile(this, "GOAL_REACHED: Marking goal as reached, appName='$appName'")
+        
+        // Update goal status
+        goalId?.let {
+            prefs.edit().putBoolean("goalActive_$it", false)
+                .putBoolean("goalReached_$it", true)
+                .putString("goalReachedTime_$it", ZonedDateTime.now().toString())
+                .apply()
+        }
+        
+        // Update foreground notification first
+        updateForegroundNotification(0)
+        
+        // Notify Flutter app via platform channel
+        platformChannel?.notifyMilestoneReached()
+        
+        // Add a delay before stopping the service to ensure the callback is processed
+        Handler(Looper.getMainLooper()).postDelayed({
+            Log.d("AWTY_SERVICE", "GOAL_REACHED: Stopping service after delay")
+            writeToLogFile(this@AwtyStepService, "GOAL_REACHED: Stopping service after delay")
+            stopSelf()
+        }, 1000) // 1 second delay
+        
+        Log.d("AWTY_SERVICE", "GOAL_REACHED: Goal reached, service will stop in 1 second")
+        writeToLogFile(this, "GOAL_REACHED: Goal reached, service will stop in 1 second")
+    }
+
+    private fun updateStatusFile(
+        currentSteps: Int,
+        deltaSteps: Int,
+        baselineSteps: Int,
+        stepsTaken: Int,
+        stepsRemaining: Int,
+        isRunning: Boolean,
+        testMode: Boolean = false,
+        testModeSecondsRemaining: Int? = null
+    ) {
+        val status = JSONObject().apply {
+            put("currentSteps", currentSteps)
+            put("deltaSteps", deltaSteps)
+            put("baselineSteps", baselineSteps)
+            put("stepsTaken", stepsTaken)
+            put("stepsRemaining", stepsRemaining)
+            put("isRunning", isRunning)
+            put("goalId", goalId)
+            put("lastUpdated", System.currentTimeMillis())
+            put("testMode", testMode)
+            if (testModeSecondsRemaining != null) {
+                put("testModeSecondsRemaining", testModeSecondsRemaining)
+            }
+        }
+        
+        // Write to status file
+        try {
+            val statusFile = File(filesDir, "awty_status.json")
+            statusFile.writeText(status.toString())
+        } catch (e: Exception) {
+            Log.e("AWTY_SERVICE", "Error writing status file: $e")
+        }
     }
 
     private fun createNotificationChannel() {
@@ -184,210 +403,15 @@ class AwtyStepService : Service() {
         }
     }
 
-    private fun createMilestoneNotificationChannel() {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            val manager = getSystemService(NotificationManager::class.java)
-            
-            // Force recreation of the channel to ensure correct vibration settings
-            manager?.deleteNotificationChannel(MILESTONE_CHANNEL_ID)
-            Log.d("AWTY_SERVICE", "Milestone notification channel deleted for recreation")
-            writeToLogFile(this, "MILESTONE_CHANNEL_DELETED: forcing recreation with correct settings")
-            
-            val channel = NotificationChannel(
-                MILESTONE_CHANNEL_ID,
-                "AWTY Milestones",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                enableVibration(true)
-                // Set the aggressive vibration pattern directly on the channel
-                vibrationPattern = getGoalVibrationPattern()
-                // Use gentler notification sound instead of alarm sound
-                setSound(android.provider.Settings.System.DEFAULT_NOTIFICATION_URI, null)
-                description = "Milestone notifications with aggressive vibration and gentle notification sound."
-            }
-            manager?.createNotificationChannel(channel)
-            Log.d("AWTY_SERVICE", "Milestone notification channel created with IMPORTANCE_HIGH, aggressive vibration and gentle sound.")
-            writeToLogFile(this, "MILESTONE_CHANNEL_CREATED: high priority with aggressive vibration and gentle sound")
-            
-            // Log the channel settings to verify
-            val createdChannel = manager?.getNotificationChannel(MILESTONE_CHANNEL_ID)
-            if (createdChannel != null) {
-                Log.d("AWTY_SERVICE", "CHANNEL_VERIFICATION: vibrationEnabled=${createdChannel.shouldVibrate()}, vibrationPattern=${createdChannel.vibrationPattern?.contentToString()}")
-                writeToLogFile(this, "CHANNEL_VERIFICATION: vibrationEnabled=${createdChannel.shouldVibrate()}, vibrationPattern=${createdChannel.vibrationPattern?.contentToString()}")
-            }
-        }
-    }
 
-    // STEP 2: Simple polling with clear intervals
-    private fun startSimplePolling() {
-        if (deltaSteps <= 0) {
-            Log.d("AWTY_SERVICE", "POLLING_SKIPPED: No active goal (deltaSteps=$deltaSteps)")
-            writeToLogFile(this, "POLLING_SKIPPED: No active goal (deltaSteps=$deltaSteps)")
-            return
-        }
-        
-        Log.d("AWTY_SERVICE", "POLLING_STARTED: Starting timer for deltaSteps=$deltaSteps")
-        writeToLogFile(this, "POLLING_STARTED: Starting timer for deltaSteps=$deltaSteps")
-        
-        hasStartedPolling = true
-        
-        // Acquire a partial wake lock to ensure timer fires reliably
-        pollingWakeLock = powerManager.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "AWTY::PollingWakeLock"
-        )
-        pollingWakeLock?.acquire()
-        Log.d("AWTY_SERVICE", "WAKELOCK_ACQUIRED: For reliable polling")
-        writeToLogFile(this, "WAKELOCK_ACQUIRED: For reliable polling")
-        
-        timer = Timer()
-        timer?.scheduleAtFixedRate(object : TimerTask() {
-            override fun run() {
-                CoroutineScope(Dispatchers.IO).launch {
-                    val today = java.time.LocalDate.now().toString()
-                    val lastDate = segmentStartDate
-                    var stepsToday = getCurrentStepCount()
-                    // If the date has changed, accumulate yesterday's steps and reset baseline
-                    if (today != lastDate && lastDate.isNotEmpty()) {
-                        val stepsAtMidnight = baseline
-                        val stepsYesterday = stepsAtMidnight - baseline
-                        // Actually, steps at midnight is baseline, so steps taken yesterday = (steps at 23:59) - baseline
-                        val stepsToMidnight = stepsAtMidnight - baseline // This will be 0, so we need to use current - baseline before midnight
-                        val stepsYesterdayTaken = current - baseline
-                        stepsAccumulated += stepsYesterdayTaken
-                        baseline = 0
-                        segmentStartDate = today
-                        prefs.edit().putString("segmentStartDate", segmentStartDate).putInt("stepsAccumulated", stepsAccumulated).apply()
-                        Log.d("AWTY_SERVICE", "MIDNIGHT_ROLLOVER: stepsAccumulated=$stepsAccumulated, newBaseline=$baseline, newDate=$segmentStartDate")
-                        writeToLogFile(this@AwtyStepService, "MIDNIGHT_ROLLOVER: stepsAccumulated=$stepsAccumulated, newBaseline=$baseline, newDate=$segmentStartDate")
-                    }
-                    // Always update current
-                    current = stepsToday
-                    // Calculate total steps taken since segment start (across days)
-                    val stepsTaken = stepsAccumulated + (current - baseline)
-                    val stepsRemaining = deltaSteps - stepsTaken
-                    // Save state and update status file
-                    saveState(baseline, deltaSteps, current, true)
-                    writeStatusFile(stepsTaken, stepsRemaining)
-                    updateForegroundNotification(stepsRemaining)
-                    // Check for goal completion
-                    if (stepsRemaining <= 0) {
-                        fireGoalNotification()
-                        stopSelf()
-                    }
-                }
-            }
-        }, 0, 30000) // Poll every 30 seconds
-        
-        // Wake lock will be released when service is destroyed or goal is reached
-        // No auto-release timer - keep it active until completion
-    }
 
-    // STEP 3: Simple poll function
-    private suspend fun performPoll() {
-        val pollTime = ZonedDateTime.now().toString()
-        Log.d("AWTY_SERVICE", "PERFORM_POLL_CALLED: at $pollTime")
-        writeToLogFile(this, "PERFORM_POLL_CALLED: at $pollTime")
-        
-        // Don't poll if there's no active goal
-        if (deltaSteps <= 0) {
-            Log.d("AWTY_SERVICE", "POLL_SKIPPED: No active goal (deltaSteps=$deltaSteps)")
-            writeToLogFile(this, "POLL_SKIPPED: No active goal (deltaSteps=$deltaSteps)")
-            return
-        }
-        
-        Log.d("AWTY_SERVICE", "POLL_STARTED: hasStartedPolling=$hasStartedPolling")
-        writeToLogFile(this, "POLL_STARTED: hasStartedPolling=$hasStartedPolling")
-        
-        // Get current step count
-        val previousCurrent = current
-        current = getCurrentStepCount()
-        
-        // Check for step count reset (e.g., daily Health Connect reset)
-        if (current < baseline) {
-            Log.d("AWTY_SERVICE", "STEP_COUNT_RESET: current=$current < baseline=$baseline")
-            writeToLogFile(this, "STEP_COUNT_RESET: current=$current < baseline=$baseline")
-            
-            // Adjust baseline to new current step count
-            baseline = current
-            Log.d("AWTY_SERVICE", "BASELINE_ADJUSTED: newBaseline=$baseline")
-            writeToLogFile(this, "BASELINE_ADJUSTED: newBaseline=$baseline")
-        }
-        
-        // Calculate progress
-        val stepsTaken = current - baseline
-        val stepsRemaining = deltaSteps - stepsTaken
-        
-        Log.d("AWTY_SERVICE", "POLL_RESULT: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, stepsTaken=$stepsTaken, stepsRemaining=$stepsRemaining")
-        writeToLogFile(this, "POLL_RESULT: goalId=$goalId, baseline=$baseline, deltaSteps=$deltaSteps, current=$current, stepsTaken=$stepsTaken, stepsRemaining=$stepsRemaining")
-        saveState(baseline, deltaSteps, current, true)
-        
-        // Write status file for host application to read
-        writeStatusFile(stepsTaken, stepsRemaining)
-        
-        // Update foreground notification with current progress
-        updateForegroundNotification(stepsRemaining)
-        
-        // STEP 4: Check if goal reached (only after polling has started)
-        if (stepsTaken >= deltaSteps && deltaSteps > 0 && stepsTaken > 0 && hasStartedPolling) {
-            Log.d("AWTY_SERVICE", "GOAL_REACHED: baseline=$baseline, deltaSteps=$deltaSteps, current=$current, stepsTaken=$stepsTaken")
-            writeToLogFile(this, "GOAL_REACHED: goalId=$goalId, stepsTaken=$stepsTaken, deltaSteps=$deltaSteps, baseline=$baseline, current=$current")
-            
-            withContext(Dispatchers.Main) {
-                fireGoalNotification()
-                
-                // Clear the delta to prevent further polling
-                deltaSteps = 0
-                saveState(baseline, deltaSteps, current, false)
-                
-                // Release polling wake lock
-                pollingWakeLock?.let {
-                    if (it.isHeld) {
-                        it.release()
-                        Log.d("AWTY_SERVICE", "POLLING_WAKELOCK_RELEASED: Goal reached")
-                        writeToLogFile(this@AwtyStepService, "POLLING_WAKELOCK_RELEASED: Goal reached")
-                    }
-                }
-                
-                // Stop polling timer first
-                timer?.cancel()
-                timer = null
-                writeToLogFile(this@AwtyStepService, "TIMER_CANCELLED: service stopping")
-                
-                // Wait 4 seconds for vibration to complete, then notify app and stop service
-                Handler(Looper.getMainLooper()).postDelayed({
-                    // Send callback to app
-                    platformChannel?.notifyMilestoneReached()
-                    Log.d("AWTY_SERVICE", "PLATFORM_CALLBACK_DELAYED: Sent to app after 4 seconds")
-                    writeToLogFile(this@AwtyStepService, "PLATFORM_CALLBACK_DELAYED: Sent to app after 4 seconds")
-                    
-                    // Then stop the service
-                    stopSelf()
-                    Log.d("AWTY_SERVICE", "SERVICE_STOPPED_DELAYED: After 4 second delay")
-                    writeToLogFile(this@AwtyStepService, "SERVICE_STOPPED_DELAYED: After 4 second delay")
-                }, 4000L) // 4 seconds delay
-            }
-            
-            // Update goal status
-            goalId?.let {
-                prefs.edit().putBoolean("goalActive_$it", false)
-                    .putBoolean("goalReached_$it", true)
-                    .putString("goalReachedTime_$it", ZonedDateTime.now().toString())
-                    .apply()
-            }
-        } else {
-            // Log why goal wasn't reached
-            val reason = when {
-                !hasStartedPolling -> "polling not started yet"
-                stepsTaken < deltaSteps -> "stepsTaken ($stepsTaken) < deltaSteps ($deltaSteps)"
-                deltaSteps <= 0 -> "deltaSteps ($deltaSteps) <= 0"
-                stepsTaken <= 0 -> "stepsTaken ($stepsTaken) <= 0"
-                else -> "unknown"
-            }
-            Log.d("AWTY_SERVICE", "GOAL_NOT_REACHED: $reason")
-            writeToLogFile(this, "GOAL_NOT_REACHED: $reason")
-        }
-    }
+    // STEP 2: Simple polling - REMOVED
+    // This method is no longer used since we get step data via platform channel
+    // from the pedometer package in the Flutter app
+
+    // STEP 3: Simple poll function - REMOVED
+    // This method is no longer used since we get step data via platform channel
+    // from the pedometer package in the Flutter app
 
     private fun saveState(baseline: Int, deltaSteps: Int, current: Int, running: Boolean) {
         prefs.edit()
@@ -433,8 +457,12 @@ class AwtyStepService : Service() {
                 "Goal reached!"
             }
             
+            val notificationTitle = "$appName is tracking your steps"
+            Log.d("AWTY_SERVICE", "UPDATE_NOTIFICATION: title='$notificationTitle', text='$notificationText', appName='$appName'")
+            writeToLogFile(this, "UPDATE_NOTIFICATION: title='$notificationTitle', text='$notificationText', appName='$appName'")
+            
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
-                .setContentTitle("$appName is tracking your steps")
+                .setContentTitle(notificationTitle)
                 .setContentText(notificationText)
                 .setSmallIcon(R.drawable.ic_walking_man)
                 .setColor(android.graphics.Color.WHITE) // Force white color
@@ -455,120 +483,16 @@ class AwtyStepService : Service() {
         }
     }
 
-    private fun fireGoalNotification() {
-        Log.d("AWTY_SERVICE", "NOTIFICATION_FIRED: Goal notification triggered")
-        writeToLogFile(this, "NOTIFICATION_FIRED: Goal notification triggered")
-        
-        // Acquire wake lock to ensure device wakes up
-        val wakeLock = powerManager.newWakeLock(
-            PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or PowerManager.ON_AFTER_RELEASE,
-            "AWTY::MilestoneWakeLock"
-        )
-        wakeLock.acquire(10000) // Hold for 10 seconds
-        
-        // Create intent to launch the app normally (method channel will handle the rest)
-        val intent = packageManager.getLaunchIntentForPackage(packageName)
-        intent?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 
-            0, 
-            intent, 
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-        
-        // Create simple, generic milestone notification
-        val manager = getSystemService(NotificationManager::class.java)
-        // Don't delete the channel - preserve custom settings
-        createMilestoneNotificationChannel()
-        
-        // Use gentler notification sound instead of alarm sound
-        val alertSound = android.provider.Settings.System.DEFAULT_NOTIFICATION_URI
-        
-        val vibrationPattern = getGoalVibrationPattern()
-        Log.d("AWTY_SERVICE", "VIBRATION_PATTERN: ${vibrationPattern.contentToString()}")
-        writeToLogFile(this, "VIBRATION_PATTERN: ${vibrationPattern.contentToString()}")
-        
-        val notification = NotificationCompat.Builder(this, MILESTONE_CHANNEL_ID)
-            .setContentTitle("Goal reached!")
-            .setContentText("Tap to continue.")
-            .setSmallIcon(R.drawable.ic_walking_man)
-            .setColor(android.graphics.Color.WHITE) // Force white color
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .setAutoCancel(true)
-            .setFullScreenIntent(pendingIntent, true)
-            .setContentIntent(pendingIntent)
-            .setVibrate(vibrationPattern) // Aggressive vibration for pocket detection
-            .setSound(alertSound)
-            .build()
-        manager?.notify(NOTIFICATION_ID + 1, notification)
-        Log.d("AWTY_SERVICE", "NOTIFICATION_SENT: Generic goal notification")
-        writeToLogFile(this, "NOTIFICATION_SENT: Generic goal notification")
-        
-        // Release wake lock after a delay (longer than notification delay to ensure device stays awake)
-        Handler(Looper.getMainLooper()).postDelayed({
-            if (wakeLock.isHeld) {
-                wakeLock.release()
-                Log.d("AWTY_SERVICE", "WAKELOCK_RELEASED")
-                writeToLogFile(this@AwtyStepService, "WAKELOCK_RELEASED")
-            }
-        }, 6000L) // 6 seconds to ensure it covers the 4-second notification delay
-    }
 
-    private suspend fun getCurrentStepCount(): Int {
-        val now = java.time.ZonedDateTime.now()
-        Log.d("AWTY_SERVICE", "STEP_COUNT_REQUESTED: at $now")
-        writeToLogFile(this, "STEP_COUNT_REQUESTED: at $now")
-        
-        val permissions = setOf(HealthPermission.getReadPermission(StepsRecord::class))
-        val granted = healthConnectClient.permissionController.getGrantedPermissions()
-        if (!granted.containsAll(permissions)) {
-            saveState(baseline, deltaSteps, current, false)
-            withContext(Dispatchers.Main) {
-                firePermissionNotification()
-                stopSelf()
-            }
-            Log.e("AWTY_SERVICE", "PERMISSION_ERROR: Missing Health Connect permissions!")
-            writeToLogFile(this, "PERMISSION_ERROR: Missing Health Connect permissions!")
-            return prefs.getInt("current", 0)
-        }
-        return try {
-            val now = ZonedDateTime.now()
-            val midnight = now.toLocalDate().atStartOfDay(now.zone)
-            val request = ReadRecordsRequest(
-                recordType = StepsRecord::class,
-                timeRangeFilter = TimeRangeFilter.between(
-                    midnight.toInstant(),
-                    now.toInstant()
-                )
-            )
-            val response = healthConnectClient.readRecords(request)
-            val steps = response.records.sumOf { it.count }.toInt()
-            
-            Log.d("AWTY_SERVICE", "STEP_COUNT_RETURNED: $steps at $now")
-            Log.d("AWTY_SERVICE", "STEP_RECORDS_FOUND: ${response.records.size} records")
-            writeToLogFile(this, "STEP_COUNT_RETURNED: $steps (${response.records.size} records) at $now")
-            
-            // Log the most recent record if available
-            if (response.records.isNotEmpty()) {
-                val latestRecord = response.records.maxByOrNull { it.startTime }
-                Log.d("AWTY_SERVICE", "LATEST_RECORD: ${latestRecord?.count} steps at ${latestRecord?.startTime}")
-                writeToLogFile(this, "LATEST_RECORD: ${latestRecord?.count} steps at ${latestRecord?.startTime}")
-            }
-            
-            steps
-        } catch (e: Exception) {
-            Log.e("AWTY_SERVICE", "STEP_COUNT_ERROR: ${e.message}")
-            writeToLogFile(this, "STEP_COUNT_ERROR: ${e.message}")
-            prefs.getInt("current", 0)
-        }
-    }
+
+    // getCurrentStepCount() method - REMOVED
+    // This method is no longer used since we get step data via platform channel
+    // from the pedometer package in the Flutter app
 
     private fun firePermissionNotification() {
-        // Create an intent to launch Health Connect permission screen
-        val intent = Intent().apply {
-            action = "androidx.health.ACTION_REQUEST_PERMISSIONS"
-            setPackage("com.google.android.apps.healthdata")
+        // Create an intent to launch app settings for Activity Recognition permission
+        val intent = Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+            data = android.net.Uri.fromParts("package", packageName, null)
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         }
         
@@ -581,7 +505,7 @@ class AwtyStepService : Service() {
         
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("$appName needs step tracking permission")
-            .setContentText("Tap to grant Health Connect access to track your steps.")
+            .setContentText("Tap to grant Activity Recognition permission for step tracking.")
             .setSmallIcon(R.drawable.ic_walking_man)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
@@ -599,6 +523,28 @@ class AwtyStepService : Service() {
      * Clear any existing "Goal reached" notifications when starting a new goal
      * This prevents the old "Goal reached" message from appearing when a new goal starts
      */
+    private fun startForegroundService() {
+        if (!isForegroundService) {
+            val notificationTitle = "$appName is tracking your steps"
+            Log.d("AWTY_SERVICE", "Creating notification with title: '$notificationTitle'")
+            writeToLogFile(this, "NOTIFICATION_CREATED: title='$notificationTitle'")
+            
+            val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle(notificationTitle)
+                .setContentText("Step tracking in progress")
+                .setSmallIcon(R.drawable.ic_walking_man)
+                .setColor(android.graphics.Color.WHITE) // Force white color
+                .setOngoing(true)
+                .setPriority(NotificationCompat.PRIORITY_LOW)
+                .setSound(null)
+                .setVibrate(null)
+                .build()
+            Log.d("AWTY_SERVICE", "Calling startForeground immediately (silent notification)")
+            startForeground(NOTIFICATION_ID, notification)
+            isForegroundService = true
+        }
+    }
+
     private fun clearGoalReachedNotifications() {
         try {
             val manager = getSystemService(NotificationManager::class.java)
@@ -618,18 +564,5 @@ class AwtyStepService : Service() {
     }
 }
 
-/**
- * Get the current vibration pattern for goal notifications
- * This can be easily modified to test different patterns
- */
-private fun getGoalVibrationPattern(): LongArray {
-    // Very distinctive pattern that should be noticeable even at low intensity
-    // Pattern: 3 long pulses with longer pauses - more distinctive than gentle patterns
-    return longArrayOf(0, 1200, 300, 1200, 300, 1200)
-    
-    // Alternative patterns to test:
-    // Original 5-pulse: longArrayOf(0, 800, 150, 800, 150, 800, 150, 800, 150, 800)
-    // 7 short pulses: longArrayOf(0, 400, 100, 400, 100, 400, 100, 400, 100, 400, 100, 400, 100, 400)
-    // Morse code "SOS": longArrayOf(0, 200, 100, 200, 100, 200, 300, 500, 100, 500, 100, 500, 300, 200, 100, 200, 100, 200)
-}
+
 } 

@@ -13,6 +13,11 @@ class AwtyPlatformChannel(private val context: Context) : MethodCallHandler {
     companion object {
         private const val TAG = "AWTY_CHANNEL"
         private const val prefsName = "awty_prefs"
+        private var methodChannel: MethodChannel? = null
+        
+        fun setMethodChannel(channel: MethodChannel) {
+            methodChannel = channel
+        }
         
         fun writeToLogFile(context: android.content.Context, message: String) {
             try {
@@ -30,15 +35,21 @@ class AwtyPlatformChannel(private val context: Context) : MethodCallHandler {
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
         when (call.method) {
             "startStepTracking" -> {
-                val deltaSteps = call.argument<Int>("deltaSteps") ?: 1000
-                val goalId = call.argument<String>("goalId") ?: UUID.randomUUID().toString()
-                val appName = call.argument<String>("appName") ?: "Unknown App"
-                Log.d(TAG, "startStepTracking called with goalId: $goalId, deltaSteps: $deltaSteps, appName: $appName")
-                writeToLogFile(context, "startStepTracking called with goalId: $goalId, deltaSteps: $deltaSteps, appName: $appName")
+                            val deltaSteps = call.argument<Int>("deltaSteps") ?: 1000
+            val goalId = call.argument<String>("goalId") ?: UUID.randomUUID().toString()
+            val appName = call.argument<String>("appName") ?: "Unknown App"
+            val testMode = call.argument<Boolean>("testMode") ?: false  // New parameter
+            
+            Log.d(TAG, "startStepTracking called with goalId: $goalId, deltaSteps: $deltaSteps, appName: $appName, testMode: $testMode")
+            writeToLogFile(context, "startStepTracking called with goalId: $goalId, deltaSteps: $deltaSteps, appName: $appName, testMode: $testMode")
 
                 // Persist the current active goalId
                 val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
-                prefs.edit().putString("currentGoalId", goalId).putBoolean("goalActive_$goalId", true).apply()
+                prefs.edit()
+                    .putString("currentGoalId", goalId)
+                    .putBoolean("goalActive_$goalId", true)
+                    .putBoolean("testMode_$goalId", testMode)  // Store test mode flag
+                    .apply()
 
                 // Set the static reference so service can call back
                 AwtyStepService.setPlatformChannel(this)
@@ -47,6 +58,7 @@ class AwtyPlatformChannel(private val context: Context) : MethodCallHandler {
                     putExtra("deltaSteps", deltaSteps)
                     putExtra("goalId", goalId)
                     putExtra("appName", appName)
+                    putExtra("testMode", testMode)  // Pass to service
                 }
 
                 if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
@@ -144,12 +156,32 @@ class AwtyPlatformChannel(private val context: Context) : MethodCallHandler {
                 // Implementation for refreshing step count
                 result.success(null)
             }
-            "checkHealthConnectPermissions" -> {
-                // Implementation for checking Health Connect permissions
-                result.success(true)
-            }
-            "requestHealthConnectPermissions" -> {
-                // Implementation for requesting Health Connect permissions
+            "updateStepCount" -> {
+                val stepCount = call.argument<Int>("stepCount") ?: 0
+                val goalId = call.argument<String>("goalId") ?: ""
+                
+                Log.d(TAG, "updateStepCount called with stepCount: $stepCount, goalId: $goalId")
+                writeToLogFile(context, "updateStepCount called with stepCount: $stepCount, goalId: $goalId")
+                
+                // Update the step count in shared preferences
+                val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
+                prefs.edit()
+                    .putInt("current", stepCount)
+                    .apply()
+                
+                // Notify the service about the step count update
+                val intent = android.content.Intent(context, AwtyStepService::class.java).apply {
+                    action = "UPDATE_STEP_COUNT"
+                    putExtra("stepCount", stepCount)
+                    putExtra("goalId", goalId)
+                }
+                
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                
                 result.success(true)
             }
             else -> {
@@ -161,7 +193,16 @@ class AwtyPlatformChannel(private val context: Context) : MethodCallHandler {
     fun notifyMilestoneReached() {
         Log.d(TAG, "notifyMilestoneReached called")
         writeToLogFile(context, "Platform channel milestone notification sent")
-        // This would trigger a callback to the Flutter app
+        
+        // Send callback to Flutter app via method channel
+        try {
+            methodChannel?.invokeMethod("goalReached", null)
+            Log.d(TAG, "GOAL_REACHED_CALLBACK: Sent 'goalReached' callback to Flutter app")
+            writeToLogFile(context, "GOAL_REACHED_CALLBACK: Sent 'goalReached' callback to Flutter app")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error sending goal reached callback", e)
+            writeToLogFile(context, "ERROR: Failed to send goal reached callback: ${e.message}")
+        }
     }
     
     /**

@@ -1,0 +1,25 @@
+name: awty_engine_example
+description: Example app demonstrating AWTY Engine integration
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.8.1
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  awty_engine:
+    git:
+      url: https://github.com/johnatcannon/awty-engine.git
+      ref: main
+  pedometer: ^4.1.1
+  permission_handler: ^11.3.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true

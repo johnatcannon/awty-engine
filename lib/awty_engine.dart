@@ -1,134 +1,171 @@
 /// AWTY Engine (Are We There Yet?)
 /// Minimal, decoupled step-delta notifier for use in Agatha, WalkWise, etc.
 /// See docs/__AWTY-Spec.md for details.
+///
+/// **BREAKING CHANGES in v0.1.0:**
+/// - Simplified notification approach - AWTY focuses solely on step tracking and goal detection
+/// - Removed custom notifications, sounds, and vibrations (handled by calling application)
+/// - Moved from Health Connect to `pedometer` package for step counting
+/// - Updated API to use `AwtyIntegration` class for better integration
 
 import 'package:flutter/services.dart';
 
-class AwtyEngine {
+/// Service for integrating with the AWTY Engine
+class AwtyIntegration {
   static const MethodChannel _channel = MethodChannel('awty_engine');
 
-  /// Starts step tracking with delta steps (simplified API).
-  /// Notify when X additional steps are taken from current baseline.
+  // Callback functions
+  static VoidCallback? onGoalReached;
+  static Function(String)? onError;
+  static Function(String)? onPermissionDenied;
+
+  /// Initialize AWTY integration and set up platform channel handlers
+  static Future<void> initialize() async {
+    _channel.setMethodCallHandler((call) async {
+      switch (call.method) {
+        case 'goalReached':
+          onGoalReached?.call();
+          break;
+        case 'permissionDenied':
+          onPermissionDenied?.call(call.arguments ?? 'Permission denied');
+          break;
+        case 'serviceError':
+          onError?.call(call.arguments ?? 'Service error');
+          break;
+        default:
+          print('Unknown method call: ${call.method}');
+      }
+    });
+  }
+
+  /// Start step tracking with AWTY
   static Future<void> startStepTracking({
-    required int deltaSteps, 
-    required String goalId, 
-    required String appName,  // Name of the calling app (e.g., "Agatha", "WalkWise")
+    required int deltaSteps,
+    required String goalId,
+    required String appName,
+    bool testMode = false,
   }) async {
     try {
       await _channel.invokeMethod('startStepTracking', {
         'deltaSteps': deltaSteps,
         'goalId': goalId,
         'appName': appName,
+        'testMode': testMode,
       });
-      print('[AWTY] Started step tracking for $deltaSteps additional steps, goalId: $goalId, app: $appName');
-    } catch (e) {
-      print('[AWTY] Error starting step tracking: $e');
-      rethrow;
+    } on PlatformException catch (e) {
+      throw Exception('Failed to start tracking: ${e.message}');
     }
   }
 
-  /// Stops step tracking.
+  /// Stop step tracking
   static Future<void> stopStepTracking() async {
     try {
       await _channel.invokeMethod('stopStepTracking');
-      print('[AWTY] Stopped step tracking');
-    } catch (e) {
-      print('[AWTY] Error stopping step tracking: $e');
-      rethrow;
+    } on PlatformException catch (e) {
+      throw Exception('Failed to stop tracking: ${e.message}');
     }
   }
 
-  /// Fetches the last N lines of the AWTY log file from the platform channel.
-  static Future<String> getAwtyLogTail({int lines = 50}) async {
+  /// Get current progress from AWTY
+  static Future<Map<String, dynamic>?> getCurrentProgress() async {
     try {
-      final result = await _channel.invokeMethod('getAwtyLogTail', {'lines': lines});
-      return result as String;
-    } catch (e) {
-      print('[AWTY] Error getting log tail: $e');
-      return 'Error reading log: $e';
+      final result = await _channel.invokeMethod('getCurrentProgress');
+      return result != null ? Map<String, dynamic>.from(result) : null;
+    } on PlatformException catch (e) {
+      throw Exception('Failed to get progress: ${e.message}');
     }
   }
 
-  /// Requests DND override (notification policy access) permission. Returns true if already granted, false if user needs to grant it.
-  static Future<bool> requestDndOverridePermission() async {
+  /// Get AWTY service status
+  static Future<Map<String, dynamic>> getServiceStatus() async {
     try {
-      final result = await _channel.invokeMethod('requestDndOverridePermission');
-      return result == true;
-    } catch (e) {
-      print('[AWTY] Error requesting DND permission: $e');
+      final result = await _channel.invokeMethod('getServiceStatus');
+      return Map<String, dynamic>.from(result ?? {});
+    } on PlatformException catch (e) {
+      throw Exception('Failed to get service status: ${e.message}');
+    }
+  }
+
+  /// Check if AWTY service is running
+  static Future<bool> isServiceRunning() async {
+    try {
+      final result = await _channel.invokeMethod('isServiceRunning');
+      return result ?? false;
+    } on PlatformException catch (e) {
+      print('Error checking service status: ${e.message}');
       return false;
     }
   }
 
-  /// Refresh step count from AWTY service (for debugging/testing).
-  static Future<void> refreshStepCount() async {
+  /// Get AWTY service logs
+  static Future<String> getServiceLogs() async {
     try {
-      await _channel.invokeMethod('refreshStepCount');
-    } catch (e) {
-      print('[AWTY] Error refreshing step count: $e');
-      rethrow;
+      final result = await _channel.invokeMethod('getServiceLogs');
+      return result ?? 'No logs available';
+    } on PlatformException catch (e) {
+      return 'Error getting logs: ${e.message}';
     }
+  }
+
+  /// Clear AWTY state (for testing)
+  static Future<void> clearState() async {
+    try {
+      await _channel.invokeMethod('clearState');
+    } on PlatformException catch (e) {
+      throw Exception('Failed to clear state: ${e.message}');
+    }
+  }
+}
+
+/// Legacy AwtyEngine class for backward compatibility
+/// @deprecated Use AwtyIntegration instead
+@Deprecated('Use AwtyIntegration instead')
+class AwtyEngine {
+  /// Starts step tracking with delta steps (with test mode support)
+  @Deprecated('Use AwtyIntegration.startStepTracking instead')
+  static Future<void> startStepTracking({
+    required int deltaSteps,
+    required String goalId,
+    required String appName,
+    bool testMode = false,
+  }) async {
+    return AwtyIntegration.startStepTracking(
+      deltaSteps: deltaSteps,
+      goalId: goalId,
+      appName: appName,
+      testMode: testMode,
+    );
+  }
+
+  /// Stops step tracking.
+  @Deprecated('Use AwtyIntegration.stopStepTracking instead')
+  static Future<void> stopStepTracking() async {
+    return AwtyIntegration.stopStepTracking();
   }
 
   /// Get current step tracking state from AWTY service.
+  @Deprecated('Use AwtyIntegration.getCurrentProgress instead')
   static Future<Map<String, dynamic>> getStepTrackingState() async {
-    try {
-      final result = await _channel.invokeMethod('getStepTrackingState');
-      return result as Map<String, dynamic>;
-    } catch (e) {
-      print('[AWTY] Error getting step tracking state: $e');
-      return {
-        'isRunning': false,
-        'stepsTaken': 0,
-        'deltaSteps': 0,
-        'baselineSteps': 0,
-        'currentSteps': 0,
-      };
-    }
+    final result = await AwtyIntegration.getCurrentProgress();
+    return result ??
+        {
+          'isRunning': false,
+          'stepsTaken': 0,
+          'deltaSteps': 0,
+          'baselineSteps': 0,
+          'currentSteps': 0,
+        };
   }
 
   /// Get goal status from AWTY service.
+  @Deprecated('Use AwtyIntegration.getServiceStatus instead')
   static Future<Map<String, dynamic>> getGoalStatus(String goalId) async {
-    try {
-      final result = await _channel.invokeMethod('getGoalStatus', {'goalId': goalId});
-      return Map<String, dynamic>.from(result as Map);
-    } catch (e) {
-      print('[AWTY] Error getting goal status: $e');
-      return {'goalId': goalId, 'active': false, 'reached': false, 'reachedTime': null};
-    }
+    final result = await AwtyIntegration.getServiceStatus();
+    return {
+      'goalId': goalId,
+      'active': result['isRunning'] ?? false,
+      'reached': false,
+      'reachedTime': null,
+    };
   }
-
-  /// Check if Health Connect permissions are granted.
-  /// Returns true if permissions are available, false otherwise.
-  static Future<bool> checkHealthConnectPermissions() async {
-    try {
-      final result = await _channel.invokeMethod('checkHealthConnectPermissions');
-      return result == true;
-    } catch (e) {
-      print('[AWTY] Error checking Health Connect permissions: $e');
-      return false;
-    }
-  }
-
-  /// Request Health Connect permissions.
-  /// Returns true if permissions were granted, false otherwise.
-  static Future<bool> requestHealthConnectPermissions() async {
-    try {
-      final result = await _channel.invokeMethod('requestHealthConnectPermissions');
-      return result == true;
-    } catch (e) {
-      print('[AWTY] Error requesting Health Connect permissions: $e');
-      return false;
-    }
-  }
-
-  /// Clears the AWTY log file via platform channel.
-  static Future<void> clearAwtyLog() async {
-    try {
-      await _channel.invokeMethod('clearAwtyLog');
-      print('[AWTY] Cleared AWTY log file');
-    } catch (e) {
-      print('[AWTY] Error clearing AWTY log file: $e');
-    }
-  }
-} 
+}
