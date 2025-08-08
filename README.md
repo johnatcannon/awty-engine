@@ -72,6 +72,18 @@ Test mode maintains the same API interface, simply adding an optional `testMode`
 
 **Implementation Status**: ✅ **Fully implemented and tested**
 
+### 🚀 Test Drive App
+Try the [AWTY Test Drive](https://github.com/johnatcannon/awty-test-drive) app to test step tracking without building a full application. This reference implementation demonstrates:
+
+- Complete AWTY Engine integration
+- Permission handling and management
+- Real-time progress monitoring
+- Goal completion handling
+- Test mode functionality
+- Debug information and logging
+
+**Repository**: [https://github.com/johnatcannon/awty-test-drive](https://github.com/johnatcannon/awty-test-drive)
+
 ## Installation
 
 Add AWTY Engine to your `pubspec.yaml`:
@@ -82,6 +94,16 @@ dependencies:
 ```
 
 ## Quick Start
+
+### 🚀 Try the Test Drive First
+Before integrating AWTY into your app, try the [AWTY Test Drive](https://github.com/johnatcannon/awty-test-drive) app to see AWTY in action:
+
+```bash
+git clone https://github.com/johnatcannon/awty-test-drive.git
+cd awty-test-drive
+flutter pub get
+flutter run
+```
 
 ### 1. Initialize AWTY Integration
 

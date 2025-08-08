@@ -1,5 +1,5 @@
 name: awty_engine
-description: "A reliable, decoupled step tracking engine for Flutter applications. Provides pure step counting and goal notification services."
+description: "A reliable, decoupled step tracking engine for Flutter applications. Provides pure step counting and goal notification services. Includes test-drive app for easy testing."
 
 version: 0.1.0+1
 
