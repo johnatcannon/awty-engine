@@ -42,6 +42,9 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
 
     override fun onMethodCall(call: MethodCall, result: Result) {
         when (call.method) {
+            "getPlatformVersion" -> {
+                result.success("Android ${android.os.Build.VERSION.RELEASE}")
+            }
             "startTracking" -> {
                 val deltaSteps = call.argument<Int>("deltaSteps") ?: 1000
                 val goalId = call.argument<String>("goalId") ?: "goal_${System.currentTimeMillis()}"
@@ -82,6 +85,14 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
                     result.error("STEP_UPDATE_ERROR", "Missing 'steps' argument", null)
                 }
             }
+            "clearState" -> {
+                try {
+                    clearState()
+                    result.success(true)
+                } catch (e: Exception) {
+                    result.error("CLEAR_STATE_ERROR", "Failed to clear state", e.message)
+                }
+            }
             else -> {
                 result.notImplemented()
             }
@@ -116,6 +127,28 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
         val intent = Intent(context, AwtyStepService::class.java)
         context.stopService(intent)
         Log.d(TAG, "AWTY service stopped via intent.")
+    }
+
+    private fun clearState() {
+        Log.d(TAG, "clearState called")
+        try {
+            // Stop the service if it's running
+            stopTracking()
+
+            // Delete the status file
+            val statusFile = File(context.getExternalFilesDir(null), "awty_status.json")
+            if (statusFile.exists()) {
+                if (statusFile.delete()) {
+                    Log.d(TAG, "Successfully deleted status file.")
+                } else {
+                    Log.w(TAG, "Failed to delete status file.")
+                }
+            } else {
+                Log.d(TAG, "Status file does not exist, nothing to clear.")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error in clearState: $e")
+        }
     }
 
     private fun getCurrentProgress(): Map<String, Any> {

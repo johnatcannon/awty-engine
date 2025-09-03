@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-
+import 'dart:io';
 import 'package:flutter/services.dart';
-import 'package:awty_engine_v2/awty_engine_v2.dart';
+import 'package:awty_engine/awty_engine.dart';
 
 void main() {
   runApp(const MyApp());
@@ -17,7 +17,6 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   String _platformVersion = 'Unknown';
-  final _awtyEngineV2Plugin = AwtyEngineV2();
 
   @override
   void initState() {
@@ -29,10 +28,14 @@ class _MyAppState extends State<MyApp> {
   Future<void> initPlatformState() async {
     String platformVersion;
     // Platform messages may fail, so we use a try/catch PlatformException.
-    // We also handle the message potentially returning null.
     try {
-      platformVersion =
-          await _awtyEngineV2Plugin.getPlatformVersion() ?? 'Unknown platform version';
+      if (Platform.isAndroid) {
+        platformVersion = await AwtyEngine.getPlatformVersion() ?? 'Unknown platform version';
+      } else if (Platform.isIOS) {
+        platformVersion = await AwtyEngine.getPlatformVersion() ?? 'Unknown platform version';
+      } else {
+        platformVersion = 'Unknown platform';
+      }
     } on PlatformException {
       platformVersion = 'Failed to get platform version.';
     }
