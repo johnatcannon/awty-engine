@@ -1,141 +1,271 @@
 /// AWTY Engine (Are We There Yet?)
 ///
-/// Simple, focused step tracking that notifies your app when goals are reached.
-/// Supports both Android (foreground service) and iOS (HealthKit background delivery).
-/// See docs/__AWTY-Spec.md for details.
+/// Clean, simple step tracking engine with platform-agnostic interface.
+/// AWTY's ONLY job: "You have 387 steps remaining" → "Goal reached!"
 library awty_engine;
 
 import 'package:flutter/services.dart';
-import 'package:flutter/foundation.dart';
+import 'package:pedometer/pedometer.dart';
+import 'dart:async';
 
-/// Simple step tracking engine
+/// Clean step tracking engine with single responsibility
 ///
-/// AWTY does one thing: count steps and notify when goal reached.
-/// Everything else (UI, game logic, rewards) is handled by your app.
+/// AWTY handles ALL step tracking internally - no external step management needed.
+/// Simple interface: startGoal() → poll getStepsRemaining() → stopGoal()
 /// 
-/// **Platform Support:**
-/// - **Android**: Uses foreground service for reliable background tracking
-/// - **iOS**: Uses HealthKit background delivery for battery-efficient tracking
+/// **Core Principle:**
+/// - Agatha's job: "I need to walk 420 steps to unlock this clue"  
+/// - AWTY's job: "You have 387 steps remaining" → "Goal reached!"
 class AwtyEngine {
   static const MethodChannel _channel = MethodChannel('awty_engine_v2');
 
-  /// Callback function called when a goal is reached
-  static VoidCallback? onGoalReached;
+  /// Optional callback when goal reached (alternative to polling)
+  static VoidCallback? _goalReachedCallback;
+  
+  /// Internal step tracking state - AWTY manages everything
+  static int _goalSteps = 0;
+  static int _baselineSteps = 0;
+  static bool _isTracking = false;
+  static bool _testMode = false;
+  static DateTime? _testModeStartTime;
+  
+  /// Pedometer stream subscription for cross-platform step counting
+  static StreamSubscription<StepCount>? _stepCountSubscription;
+  
+  /// Backup polling timer for goal completion (in case stream fails)
+  static Timer? _backupPollingTimer;
 
-  /// Get the platform version information
-  static Future<String?> getPlatformVersion() async {
-    try {
-      final result = await _channel.invokeMethod('getPlatformVersion');
-      return result as String?;
-    } on PlatformException catch (e) {
-      throw Exception('Failed to get platform version: ${e.message}');
-    }
-  }
-
-  /// Start tracking steps toward a goal
-  ///
-  /// [steps] - Number of additional steps needed to reach the goal
-  /// [notificationText] - Text to show in the status bar notification (Android only)
-  /// [notificationIconName] - Icon name for notification (Android only)
-  /// [testMode] - If true, goal reached in 60 seconds instead of actual steps
-  static Future<void> startTracking({
-    required int steps,
-    String notificationText = "Walking to destination...",
-    String notificationIconName = 'barefoot',
+  /// Start a goal - AWTY handles ALL step tracking internally
+  /// 
+  /// [goalSteps] - Number of steps needed (e.g., 420)
+  /// [appName] - Name of calling app (e.g., "Agatha")
+  /// [goalId] - Unique identifier for this goal (e.g., "hagia_sophia_clue_1")
+  /// [iconName] - Optional icon for Android notification (e.g., "barefoot")
+  /// [testMode] - For testing: goal reached in 30 seconds instead of actual steps
+  static Future<void> startGoal({
+    required int goalSteps,
+    required String appName,
+    required String goalId,
+    String? iconName,
     bool testMode = false,
   }) async {
     try {
-      if (defaultTargetPlatform == TargetPlatform.iOS) {
-        // iOS: Use HealthKit background delivery
-        await _startTrackingIOS(steps, testMode);
+      // Stop any existing tracking first
+      await stopGoal();
+      
+      // Set up goal parameters
+      _goalSteps = goalSteps;
+      _isTracking = true;
+      _testMode = testMode;
+      
+      if (testMode) {
+        // Test mode: goal reached in 30 seconds
+        _testModeStartTime = DateTime.now();
+        print('[AWTY] Test mode: Goal will complete in 30 seconds');
+        
+        // Schedule test completion
+        Timer(const Duration(seconds: 30), () {
+          if (_isTracking) {
+            print('[AWTY] Test mode: Goal reached!');
+            _goalReachedCallback?.call();
+            stopGoal();
+          }
+        });
       } else {
-        // Android: Use foreground service
-        await _startTrackingAndroid(steps, notificationText, notificationIconName, testMode);
+        // Real step mode: Use native platform code
+        _testModeStartTime = null;
+        await _startNativeTracking(goalSteps, appName, goalId, iconName);
       }
-    } on PlatformException catch (e) {
-      throw Exception('Failed to start tracking: ${e.message}');
+      
+      print('[AWTY] Started goal: $goalSteps steps (testMode: $testMode)');
+    } catch (e) {
+      throw Exception('Failed to start goal: $e');
     }
   }
 
-  /// Stop step tracking
-  static Future<void> stopTracking() async {
-    try {
-      await _channel.invokeMethod('stopTracking');
-    } on PlatformException catch (e) {
-      throw Exception('Failed to stop tracking: ${e.message}');
+  /// Simple question: "Are we there yet?"
+  /// Returns number of steps remaining to reach goal
+  /// Returns 0 when goal is reached
+  static Future<int> getStepsRemaining() async {
+    if (!_isTracking) return 0;
+    
+    if (_testMode && _testModeStartTime != null) {
+      // Test mode: simulate progress over 30 seconds
+      final elapsed = DateTime.now().difference(_testModeStartTime!);
+      final progress = (elapsed.inMilliseconds / 30000.0).clamp(0.0, 1.0);
+      final stepsTaken = (progress * _goalSteps).round();
+      return (_goalSteps - stepsTaken).clamp(0, _goalSteps);
+    } else {
+      // Real step mode: use native platform code
+      try {
+        print('[AWTY] Calling getStepsRemaining...');
+        final result = await _channel.invokeMethod('getStepsRemaining');
+        print('[AWTY] getStepsRemaining returned: $result');
+        return result ?? 0;
+      } catch (e) {
+        print('[AWTY] Error getting steps remaining: $e');
+        return 0;
+      }
     }
   }
 
-  /// Get current progress
-  static Future<Map<String, dynamic>?> getProgress() async {
-    try {
-      final result = await _channel.invokeMethod('getCurrentProgress');
-      return result != null ? Map<String, dynamic>.from(result) : null;
-    } on PlatformException catch (e) {
-      throw Exception('Failed to get progress: ${e.message}');
-    }
-  }
-
-  /// Clears all stored state from the AWTY engine.
-  /// Call this before starting a new game to prevent issues with stale data.
-  static Future<void> clearState() async {
-    try {
-      await _channel.invokeMethod('clearState');
-    } on PlatformException catch (e) {
-      throw Exception('Failed to clear state: ${e.message}');
-    }
-  }
-
-  /// Update the service with the latest step count from the pedometer
-  /// 
-  /// **Note**: On both platforms, this method forwards step count updates
-  /// to the native engine for processing and goal checking.
-  static Future<void> updateStepCount(int steps) async {
-    try {
-      // Both platforms: Forward steps to native engine
-      await _channel.invokeMethod('updateStepCount', {'stepCount': steps});
-    } on PlatformException catch (e) {
-      throw Exception('Failed to update step count: ${e.message}');
-    }
-  }
-
-  /// Initialize AWTY and set up goal reached callback
-  static Future<void> initialize() async {
+  /// Optional callback when goal reached (alternative to polling)
+  static void onGoalReached(VoidCallback callback) {
+    _goalReachedCallback = callback;
+    
+    // Set up native goal reached callback
     _channel.setMethodCallHandler((call) async {
-      switch (call.method) {
-        case 'goalReached':
-          onGoalReached?.call();
-          break;
-        default:
-          // Unknown method call - ignore silently
+      if (call.method == 'onGoalReached') {
+        print('[AWTY] Native goal reached callback triggered');
+        _goalReachedCallback?.call();
+        await stopGoal();
       }
     });
   }
 
-  /// Platform-specific tracking implementation for Android
-  static Future<void> _startTrackingAndroid(
-    int steps,
-    String notificationText,
-    String notificationIconName,
-    bool testMode,
-  ) async {
-    await _channel.invokeMethod('startTracking', {
-      'deltaSteps': steps,
-      'goalId': DateTime.now().millisecondsSinceEpoch.toString(),
-      'appName': 'Agatha',
-      'notificationText': notificationText,
-      'notificationIconName': notificationIconName,
-      'testMode': testMode,
-    });
+  /// Clean up for next goal
+  static Future<void> stopGoal() async {
+    _isTracking = false;
+    _goalSteps = 0;
+    _baselineSteps = 0;
+    _testMode = false;
+    _testModeStartTime = null;
+    
+    // Stop native tracking
+    try {
+      await _channel.invokeMethod('stopGoal');
+    } catch (e) {
+      print('[AWTY] Error stopping native goal: $e');
+    }
+    
+    // Cancel pedometer subscription (fallback)
+    await _stepCountSubscription?.cancel();
+    _stepCountSubscription = null;
+    
+    // Cancel backup polling timer
+    _backupPollingTimer?.cancel();
+    _backupPollingTimer = null;
+    
+    print('[AWTY] Goal stopped and cleaned up');
   }
 
-  /// Platform-specific tracking implementation for iOS
-  static Future<void> _startTrackingIOS(int steps, bool testMode) async {
-    await _channel.invokeMethod('startTracking', {
-      'deltaSteps': steps,
-      'goalId': DateTime.now().millisecondsSinceEpoch.toString(),
-      'appName': 'Agatha',
-      'testMode': testMode,
+  /// Start native platform tracking (iOS HealthKit, Android step sensor)
+  static Future<void> _startNativeTracking(int goalSteps, String appName, String goalId, String? iconName) async {
+    try {
+      print('[AWTY] Starting native platform tracking...');
+      print('[AWTY] Calling startGoal with: goalSteps=$goalSteps, appName=$appName, goalId=$goalId, iconName=$iconName');
+      
+      // Call native platform code to start goal tracking
+      final result = await _channel.invokeMethod('startGoal', {
+        'goalSteps': goalSteps,
+        'appName': appName,
+        'goalId': goalId,
+        'iconName': iconName,
+      });
+      
+      print('[AWTY] Native tracking started successfully, result: $result');
+    } catch (e) {
+      print('[AWTY] Failed to start native tracking: $e');
+      // Fallback to pedometer if native fails
+      await _startPedometerTracking();
+    }
+  }
+
+  /// Start pedometer tracking and set baseline step count (fallback)
+  static Future<void> _startPedometerTracking() async {
+    try {
+      // Get initial step count as baseline
+      final stepCount = await _getCurrentStepCount();
+      _baselineSteps = stepCount;
+      
+      print('[AWTY] Setting up pedometer stream listener...');
+      
+      // Start monitoring step changes
+      _stepCountSubscription = Pedometer.stepCountStream.listen(
+        (StepCount event) {
+          print('[AWTY] 🚶 Pedometer stream event: steps=${event.steps}, isTracking=$_isTracking, testMode=$_testMode');
+          
+          if (_isTracking && !_testMode) {
+            final currentSteps = event.steps;
+            final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
+            final stepsRemaining = (_goalSteps - stepsTaken).clamp(0, _goalSteps);
+            
+            print('[AWTY] Step update: current=$currentSteps, baseline=$_baselineSteps, taken=$stepsTaken, remaining=$stepsRemaining');
+            
+            // Check if goal reached
+            if (stepsRemaining == 0 && _goalSteps > 0) {
+              print('[AWTY] 🎉 Goal reached via pedometer stream!');
+              _goalReachedCallback?.call();
+              stopGoal();
+            }
+          } else {
+            print('[AWTY] Ignoring pedometer event - tracking:$_isTracking, testMode:$_testMode');
+          }
+        },
+        onError: (error) {
+          print('[AWTY] ❌ Pedometer stream error: $error');
+        },
+      );
+      
+      print('[AWTY] Pedometer tracking started. Baseline: $_baselineSteps steps, stream listener active');
+    } catch (e) {
+      print('[AWTY] Failed to start pedometer tracking: $e');
+      throw Exception('Failed to start step tracking: $e');
+    }
+  }
+  
+  /// Get current step count from pedometer
+  static Future<int> _getCurrentStepCount() async {
+    try {
+      // Get current step count - this is a one-time reading
+      final stepCount = await Pedometer.stepCountStream.first;
+      print('[AWTY] 📊 Polling pedometer: current=${stepCount.steps} steps');
+      return stepCount.steps;
+    } catch (e) {
+      print('[AWTY] ❌ Failed to get current step count: $e');
+      return 0;
+    }
+  }
+  
+  /// Backup polling timer for goal completion (fallback if stream fails)
+  static void _startBackupPolling() {
+    _backupPollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
+      if (!_isTracking || _testMode) {
+        timer.cancel();
+        return;
+      }
+      
+      try {
+        final currentSteps = await _getCurrentStepCount();
+        final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
+        final stepsRemaining = (_goalSteps - stepsTaken).clamp(0, _goalSteps);
+        
+        print('[AWTY] 🔄 Backup polling check: current=$currentSteps, taken=$stepsTaken, remaining=$stepsRemaining');
+        
+        if (stepsRemaining == 0 && _goalSteps > 0) {
+          print('[AWTY] 🎉 Goal reached via backup polling!');
+          _goalReachedCallback?.call();
+          await stopGoal();
+        }
+      } catch (e) {
+        print('[AWTY] ❌ Backup polling error: $e');
+      }
     });
+    
+    print('[AWTY] 🔄 Backup polling started (5-second intervals)');
+  }
+  
+  /// Initialize AWTY - no longer needed but kept for compatibility
+  static Future<void> initialize() async {
+    // Test if native platform is available
+    try {
+      final result = await _channel.invokeMethod('getPlatformVersion');
+      print('[AWTY] Native platform test successful: $result');
+    } catch (e) {
+      print('[AWTY] Native platform test failed: $e');
+    }
+    
+    // Initialization now happens automatically on first startGoal() call
+    print('[AWTY] Initialize called - no setup needed with pedometer implementation');
   }
 }
