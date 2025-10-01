@@ -1,6 +1,6 @@
 name: awty_engine
 description: "A reliable, decoupled step tracking engine for Flutter applications. Provides pure step counting and goal notification services."
-version: 1.0.0
+version: 2.0.0
 homepage: https://gamesafoot.co
 repository: https://github.com/johnatcannon/awty-engine
 

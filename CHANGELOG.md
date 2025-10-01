@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.0.0] - 2025-01-XX
+
+### Major Changes
+- **Complete Pedometer Rewrite**: Replaced HealthKit real-time tracking with pedometer package for iOS
+- **Cross-Platform Consistency**: Both Android and iOS now use identical pedometer-based step tracking
+- **Improved Reliability**: Eliminated HealthKit synchronization issues and delays
+- **Real-Time Performance**: Much faster and more responsive step tracking
+
+### Fixed
+- **iOS Step Tracking**: Fixed critical bug where `currentSteps` wasn't being updated in `getStepsRemaining`
+- **Step Count Synchronization**: iOS now returns accurate remaining steps instead of always returning goal amount
+- **Notification Spam**: Fixed excessive notification updates - now only updates when steps actually change
+- **Baseline Management**: Improved baseline step establishment and management
+
+### Changed
+- **iOS Architecture**: Complete rewrite of iOS implementation to match Android pedometer pattern
+- **Step Update Flow**: Flutter pedometer package now provides step updates to both platforms
+- **HealthKit Usage**: HealthKit now only used for 30-day average handicap calculation, not real-time tracking
+- **Logging**: Reduced verbose logging to essential information only
+
+### Technical Details
+- **iOS**: `updateStepCount` now properly updates `currentSteps` variable
+- **Cross-Platform**: Both platforms use `Pedometer.stepCountStream` for real-time updates
+- **Baseline Logic**: Consistent baseline establishment across platforms
+- **Goal Completion**: Improved goal reached detection and notification handling
+
 ## [0.3.0] - 2025-09-03
 
 ### Fixed

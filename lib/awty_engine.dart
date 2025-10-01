@@ -7,6 +7,7 @@ library awty_engine;
 import 'package:flutter/services.dart';
 import 'package:pedometer/pedometer.dart';
 import 'dart:async';
+import 'dart:io';
 
 /// Clean step tracking engine with single responsibility
 ///
@@ -25,6 +26,7 @@ class AwtyEngine {
   /// Internal step tracking state - AWTY manages everything
   static int _goalSteps = 0;
   static int _baselineSteps = 0;
+  static int _currentStepCount = 0;
   static bool _isTracking = false;
   static bool _testMode = false;
   static DateTime? _testModeStartTime;
@@ -72,7 +74,7 @@ class AwtyEngine {
           }
         });
       } else {
-        // Real step mode: Use native platform code
+        // Real step mode: Use platform-specific implementations
         _testModeStartTime = null;
         await _startNativeTracking(goalSteps, appName, goalId, iconName);
       }
@@ -80,6 +82,17 @@ class AwtyEngine {
       print('[AWTY] Started goal: $goalSteps steps (testMode: $testMode)');
     } catch (e) {
       throw Exception('Failed to start goal: $e');
+    }
+  }
+
+  /// Update the background notification with current steps remaining
+  static Future<void> updateNotification(int stepsRemaining) async {
+    try {
+      await _channel.invokeMethod('updateNotification', {
+        'stepsRemaining': stepsRemaining,
+      });
+    } catch (e) {
+      print('[AWTY] Error updating notification: $e');
     }
   }
 
@@ -96,15 +109,15 @@ class AwtyEngine {
       final stepsTaken = (progress * _goalSteps).round();
       return (_goalSteps - stepsTaken).clamp(0, _goalSteps);
     } else {
-      // Real step mode: use native platform code
+      // Real step mode: use native platform method
       try {
-        print('[AWTY] Calling getStepsRemaining...');
+        print('[AWTY] Calling native getStepsRemaining...');
         final result = await _channel.invokeMethod('getStepsRemaining');
-        print('[AWTY] getStepsRemaining returned: $result');
+        print('[AWTY] Native getStepsRemaining returned: $result');
         return result ?? 0;
       } catch (e) {
-        print('[AWTY] Error getting steps remaining: $e');
-        return 0;
+        print('[AWTY] Error getting steps remaining from native: $e');
+        return _goalSteps;
       }
     }
   }
@@ -138,7 +151,7 @@ class AwtyEngine {
       print('[AWTY] Error stopping native goal: $e');
     }
     
-    // Cancel pedometer subscription (fallback)
+    // Cancel pedometer subscription (Android + fallback)
     await _stepCountSubscription?.cancel();
     _stepCountSubscription = null;
     
@@ -149,29 +162,47 @@ class AwtyEngine {
     print('[AWTY] Goal stopped and cleaned up');
   }
 
-  /// Start native platform tracking (iOS HealthKit, Android step sensor)
+  /// Start platform-specific tracking (iOS HealthKit, Android pedometer)
   static Future<void> _startNativeTracking(int goalSteps, String appName, String goalId, String? iconName) async {
     try {
-      print('[AWTY] Starting native platform tracking...');
-      print('[AWTY] Calling startGoal with: goalSteps=$goalSteps, appName=$appName, goalId=$goalId, iconName=$iconName');
+      print('[AWTY] Starting platform-specific tracking...');
       
-      // Call native platform code to start goal tracking
-      final result = await _channel.invokeMethod('startGoal', {
-        'goalSteps': goalSteps,
-        'appName': appName,
-        'goalId': goalId,
-        'iconName': iconName,
-      });
+      if (Platform.isIOS) {
+        // iOS: Use pedometer package (same as Android)
+        print('[AWTY] iOS: Using pedometer package for step tracking');
+        final result = await _channel.invokeMethod('startGoal', {
+          'goalSteps': goalSteps,
+          'appName': appName,
+          'goalId': goalId,
+          'iconName': iconName,
+          'testMode': false,
+        });
+        print('[AWTY] iOS pedometer started successfully, result: $result');
+        // Also start pedometer tracking for step updates
+        await _startPedometerTracking();
+      } else {
+        // Android: Use foreground service + pedometer package
+        print('[AWTY] Android: Using foreground service + pedometer package');
+        final result = await _channel.invokeMethod('startGoal', {
+          'goalSteps': goalSteps,
+          'appName': appName,
+          'goalId': goalId,
+          'iconName': iconName,
+          'testMode': false,
+        });
+        print('[AWTY] Android foreground service started, result: $result');
+        // Also start pedometer tracking for step updates
+        await _startPedometerTracking();
+      }
       
-      print('[AWTY] Native tracking started successfully, result: $result');
     } catch (e) {
-      print('[AWTY] Failed to start native tracking: $e');
-      // Fallback to pedometer if native fails
+      print('[AWTY] Failed to start platform-specific tracking: $e');
+      // Fallback to pedometer if platform-specific implementation fails
       await _startPedometerTracking();
     }
   }
 
-  /// Start pedometer tracking and set baseline step count (fallback)
+  /// Start pedometer tracking and set baseline step count (Android + fallback)
   static Future<void> _startPedometerTracking() async {
     try {
       // Get initial step count as baseline
@@ -185,12 +216,26 @@ class AwtyEngine {
         (StepCount event) {
           print('[AWTY] 🚶 Pedometer stream event: steps=${event.steps}, isTracking=$_isTracking, testMode=$_testMode');
           
+          // Always update current step count
+          _currentStepCount = event.steps;
+          
           if (_isTracking && !_testMode) {
             final currentSteps = event.steps;
             final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
             final stepsRemaining = (_goalSteps - stepsTaken).clamp(0, _goalSteps);
             
             print('[AWTY] Step update: current=$currentSteps, baseline=$_baselineSteps, taken=$stepsTaken, remaining=$stepsRemaining');
+            
+            // Send step count to native plugin for both platforms
+            if (Platform.isAndroid) {
+              _channel.invokeMethod('updateStepCount', {'steps': currentSteps}).catchError((e) {
+                print('[AWTY] Error sending step count to Android: $e');
+              });
+            } else if (Platform.isIOS) {
+              _channel.invokeMethod('updateStepCount', {'steps': currentSteps}).catchError((e) {
+                print('[AWTY] Error sending step count to iOS: $e');
+              });
+            }
             
             // Check if goal reached
             if (stepsRemaining == 0 && _goalSteps > 0) {
@@ -259,8 +304,14 @@ class AwtyEngine {
   static Future<void> initialize() async {
     // Test if native platform is available
     try {
+      print('[AWTY] Testing iOS plugin communication...');
       final result = await _channel.invokeMethod('getPlatformVersion');
       print('[AWTY] Native platform test successful: $result');
+      
+      // Test our custom method
+      print('[AWTY] Testing custom method...');
+      final testResult = await _channel.invokeMethod('testMethod');
+      print('[AWTY] Custom method test result: $testResult');
     } catch (e) {
       print('[AWTY] Native platform test failed: $e');
     }

@@ -10,16 +10,13 @@ import android.content.BroadcastReceiver
 import android.content.Intent
 import android.content.IntentFilter
 import android.util.Log
-import java.io.File
-import android.hardware.Sensor
-import android.hardware.SensorEvent
-import android.hardware.SensorEventListener
-import android.hardware.SensorManager
 import android.os.Handler
 import android.os.Looper
+import kotlin.math.max
+import kotlin.math.min
 
 /** AwtyEnginePlugin */
-class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
+class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
     private lateinit var channel: MethodChannel
     private lateinit var context: Context
     private lateinit var goalReachedReceiver: BroadcastReceiver
@@ -30,11 +27,7 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
     private var isTracking = false
     private var testModeStartTime: Long = 0L
     
-    // Step sensor integration - direct pedometer access
-    private lateinit var sensorManager: SensorManager
-    private var stepCounterSensor: Sensor? = null
-    private var stepMonitorHandler: Handler? = null
-    private var stepMonitorRunnable: Runnable? = null
+    // Android uses pedometer package directly - no native step sensor needed
 
     companion object {
         private const val TAG = "AWTY_PLUGIN"
@@ -56,17 +49,7 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
         val filter = IntentFilter("com.awty.engine.GOAL_REACHED")
         context.registerReceiver(goalReachedReceiver, filter)
         
-        // Initialize step sensor for direct pedometer access
-        sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
-        stepCounterSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
-        
-        if (stepCounterSensor == null) {
-            Log.w(TAG, "Step counter sensor not available on this device")
-        } else {
-            Log.d(TAG, "Step counter sensor initialized successfully")
-        }
-        
-        Log.d(TAG, "onAttachedToEngine completed and broadcast receiver registered.")
+        Log.d(TAG, "onAttachedToEngine completed - Android uses pedometer package directly")
     }
 
     override fun onMethodCall(call: MethodCall, result: Result) {
@@ -108,6 +91,15 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
                     result.error("STOP_GOAL_ERROR", "Failed to stop goal", e.message)
                 }
             }
+            "updateStepCount" -> {
+                val steps = call.argument<Int>("steps")
+                if (steps != null) {
+                    updateStepCount(steps)
+                    result.success(true)
+                } else {
+                    result.error("INVALID_ARGUMENTS", "Missing steps parameter", null)
+                }
+            }
             else -> {
                 result.notImplemented()
             }
@@ -134,32 +126,26 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
                 }
             }, 30000) // 30 seconds
         } else {
-            // Normal mode: AWTY will manage pedometer internally
-            // For now, we'll rely on external step updates via notification
-            baselineSteps = 0 // Will be set when first step update arrives
-            Log.d(TAG, "Android: Started goal tracking - waiting for step updates")
+            // Normal mode: Start foreground service for background step tracking
+            startForegroundService(goalSteps, appName, goalId, iconName)
+            Log.d(TAG, "Android: Started foreground service for background step tracking")
         }
     }
 
-    fun updateStepCount(currentSteps: Int) {
-        if (!isTracking) return
-        
-        if (baselineSteps == 0) {
-            // First step update - establish baseline
-            baselineSteps = currentSteps
-            Log.d(TAG, "Android: Established baseline steps: $baselineSteps")
-            return
-        }
-        
-        val stepsTaken = maxOf(0, currentSteps - baselineSteps)
-        val stepsRemaining = maxOf(0, goalSteps - stepsTaken)
-        
-        Log.d(TAG, "Android: Steps taken: $stepsTaken/$goalSteps, remaining: $stepsRemaining")
-        
-        if (stepsTaken >= goalSteps) {
-            Log.d(TAG, "Android: Goal reached! $stepsTaken steps taken")
-            channel.invokeMethod("goalReached", null)
-            stopGoal()
+    private fun startForegroundService(goalSteps: Int, appName: String, goalId: String, iconName: String) {
+        try {
+            val intent = Intent(context, AwtyStepService::class.java).apply {
+                putExtra("deltaSteps", goalSteps)
+                putExtra("goalId", goalId)
+                putExtra("appName", appName)
+                putExtra("notificationIconName", iconName)
+                putExtra("testMode", false)
+            }
+            
+            context.startForegroundService(intent)
+            Log.d(TAG, "Started AWTY foreground service with $goalSteps steps")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to start foreground service: $e")
         }
     }
 
@@ -171,12 +157,11 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
         if (testModeStartTime > 0) {
             // Test mode: simulate progress over 30 seconds
             val elapsed = System.currentTimeMillis() - testModeStartTime
-            val progress = minOf(elapsed / 30000.0, 1.0)
+            val progress = min(elapsed / 30000.0, 1.0)
             val stepsTaken = (progress * goalSteps).toInt()
-            return maxOf(0, goalSteps - stepsTaken)
+            return max(0, goalSteps - stepsTaken)
         } else {
-            // Normal mode: This method will be called after external step updates
-            // For now, return the goal steps (since external updates handle completion)
+            // Normal mode: Android uses pedometer package - return full goal
             return goalSteps
         }
     }
@@ -188,63 +173,38 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
         baselineSteps = 0
         testModeStartTime = 0L
         
-        // Stop step sensor monitoring
-        stopStepSensorMonitoring()
+        // Stop foreground service
+        try {
+            val intent = Intent(context, AwtyStepService::class.java)
+            context.stopService(intent)
+            Log.d(TAG, "Stopped AWTY foreground service")
+        } catch (e: Exception) {
+            Log.e(TAG, "Error stopping foreground service: $e")
+        }
         
         Log.d(TAG, "Android: Goal tracking stopped")
     }
     
-    // Step sensor event handling - direct pedometer integration
-    override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type == Sensor.TYPE_STEP_COUNTER && isTracking && testModeStartTime == 0L) {
-            val currentStepCount = event.values[0].toInt()
-            val stepsTaken = maxOf(0, currentStepCount - baselineSteps)
-            val stepsRemaining = maxOf(0, goalSteps - stepsTaken)
-            
-            Log.d(TAG, "Step sensor update: current=$currentStepCount, baseline=$baselineSteps, taken=$stepsTaken, remaining=$stepsRemaining")
-            
-            if (stepsRemaining == 0 && goalSteps > 0) {
-                Log.d(TAG, "Android: Real step goal reached!")
-                // Goal reached - notify Flutter
-                channel.invokeMethod("goalReached", null)
-                // Auto-stop tracking
-                stopGoal()
-            }
-        }
-    }
-    
-    override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // Step counter accuracy changes - log for debugging
-        Log.d(TAG, "Step sensor accuracy changed: $accuracy")
-    }
-    
-    private fun startStepSensorMonitoring() {
-        if (stepCounterSensor != null) {
-            // Get current step count as baseline
-            sensorManager.registerListener(this, stepCounterSensor, SensorManager.SENSOR_DELAY_NORMAL)
-            Log.d(TAG, "Started step sensor monitoring")
-            
-            // Get baseline step count (need to wait for first sensor reading)
-            stepMonitorHandler = Handler(Looper.getMainLooper())
-            stepMonitorRunnable = Runnable {
-                // This will be updated by onSensorChanged callback
-                Log.d(TAG, "Step sensor monitoring active")
-            }
-            stepMonitorHandler?.post(stepMonitorRunnable!!)
-        } else {
-            Log.e(TAG, "Cannot start step monitoring - no step sensor available")
-        }
-    }
-    
-    private fun stopStepSensorMonitoring() {
-        if (stepCounterSensor != null) {
-            sensorManager.unregisterListener(this)
-            Log.d(TAG, "Stopped step sensor monitoring")
+    fun updateStepCount(currentSteps: Int) {
+        if (!isTracking) return
+        
+        if (baselineSteps == 0) {
+            // First step update - establish baseline
+            baselineSteps = currentSteps
+            Log.d(TAG, "Android: Established baseline steps: $baselineSteps")
+            return
         }
         
-        stepMonitorHandler?.removeCallbacks(stepMonitorRunnable ?: return)
-        stepMonitorHandler = null
-        stepMonitorRunnable = null
+        val stepsTaken = max(0, currentSteps - baselineSteps)
+        val stepsRemaining = max(0, goalSteps - stepsTaken)
+        
+        Log.d(TAG, "Android: Steps taken: $stepsTaken/$goalSteps, remaining: $stepsRemaining")
+        
+        if (stepsTaken >= goalSteps) {
+            Log.d(TAG, "Android: Goal reached! $stepsTaken steps taken")
+            channel.invokeMethod("goalReached", null)
+            stopGoal()
+        }
     }
 
     override fun onDetachedFromEngine(binding: FlutterPlugin.FlutterPluginBinding) {
@@ -257,3 +217,4 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler, SensorEventListener {
         Log.d(TAG, "onDetachedFromEngine completed and broadcast receiver unregistered.")
     }
 }
+

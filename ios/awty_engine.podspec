@@ -4,7 +4,7 @@
 #
 Pod::Spec.new do |s|
   s.name             = 'awty_engine'
-  s.version          = '0.2.0'
+  s.version          = '1.0.0'
   s.summary          = 'A reliable, decoupled step tracking engine for Flutter applications.'
   s.description      = <<-DESC
 A simple, reliable, and decoupled step tracking engine for Flutter applications. AWTY provides pure step counting and goal notification services, allowing you to focus on building your game's UI and logic.
