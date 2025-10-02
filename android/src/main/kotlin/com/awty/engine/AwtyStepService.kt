@@ -71,7 +71,7 @@ class AwtyStepService : Service() {
         if (testMode) {
             startTestMode()
         } else {
-            updateForegroundNotification("Waiting for step data...")
+            // Keep notification simple - no updates during tracking
             writeStatusFile(0, deltaSteps)
         }
     }
@@ -105,7 +105,7 @@ class AwtyStepService : Service() {
 
         Log.d("AWTY_SERVICE", "Step update: current=$currentSteps, baseline=$baselineSteps, taken=$stepsTaken, remaining=$stepsRemaining")
         
-        updateForegroundNotification("$stepsTaken / $deltaSteps steps")
+        // Don't update notification during tracking - keep it simple
         writeStatusFile(stepsTaken, stepsRemaining)
 
         if (stepsTaken >= deltaSteps) {
@@ -128,7 +128,7 @@ class AwtyStepService : Service() {
 
     private fun startForegroundService() {
         if (!isForegroundService) {
-            val notification = createNotification("Step tracking starting...")
+            val notification = createNotification("Tracking your steps")
             startForeground(NOTIFICATION_ID, notification)
             isForegroundService = true
             Log.d("AWTY_SERVICE", "Foreground service started")
