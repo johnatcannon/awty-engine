@@ -26,7 +26,6 @@ class AwtyEngine {
   /// Internal step tracking state - AWTY manages everything
   static int _goalSteps = 0;
   static int _baselineSteps = 0;
-  static int _currentStepCount = 0;
   static bool _isTracking = false;
   static bool _testMode = false;
   static DateTime? _testModeStartTime;
@@ -216,9 +215,6 @@ class AwtyEngine {
         (StepCount event) {
           print('[AWTY] 🚶 Pedometer stream event: steps=${event.steps}, isTracking=$_isTracking, testMode=$_testMode');
           
-          // Always update current step count
-          _currentStepCount = event.steps;
-          
           if (_isTracking && !_testMode) {
             final currentSteps = event.steps;
             final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
@@ -270,34 +266,6 @@ class AwtyEngine {
       print('[AWTY] ❌ Failed to get current step count: $e');
       return 0;
     }
-  }
-  
-  /// Backup polling timer for goal completion (fallback if stream fails)
-  static void _startBackupPolling() {
-    _backupPollingTimer = Timer.periodic(const Duration(seconds: 5), (timer) async {
-      if (!_isTracking || _testMode) {
-        timer.cancel();
-        return;
-      }
-      
-      try {
-        final currentSteps = await _getCurrentStepCount();
-        final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
-        final stepsRemaining = (_goalSteps - stepsTaken).clamp(0, _goalSteps);
-        
-        print('[AWTY] 🔄 Backup polling check: current=$currentSteps, taken=$stepsTaken, remaining=$stepsRemaining');
-        
-        if (stepsRemaining == 0 && _goalSteps > 0) {
-          print('[AWTY] 🎉 Goal reached via backup polling!');
-          _goalReachedCallback?.call();
-          await stopGoal();
-        }
-      } catch (e) {
-        print('[AWTY] ❌ Backup polling error: $e');
-      }
-    });
-    
-    print('[AWTY] 🔄 Backup polling started (5-second intervals)');
   }
   
   /// Initialize AWTY - no longer needed but kept for compatibility
