@@ -24,6 +24,7 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
     // Simple in-memory state management - AWTY owns all step tracking
     private var goalSteps: Int = 0
     private var baselineSteps: Int = 0
+    private var currentStepsRemaining: Int = 0
     private var isTracking = false
     private var testModeStartTime: Long = 0L
     
@@ -110,6 +111,7 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
         Log.d(TAG, "startGoal: goalSteps=$goalSteps, appName='$appName', goalId='$goalId', testMode=$testMode")
         
         this.goalSteps = goalSteps
+        this.currentStepsRemaining = goalSteps
         this.isTracking = true
         
         if (testMode) {
@@ -161,8 +163,8 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
             val stepsTaken = (progress * goalSteps).toInt()
             return max(0, goalSteps - stepsTaken)
         } else {
-            // Normal mode: Android uses pedometer package - return full goal
-            return goalSteps
+            // Normal mode: Return actual steps remaining from pedometer updates
+            return currentStepsRemaining
         }
     }
 
@@ -171,6 +173,7 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
         isTracking = false
         goalSteps = 0
         baselineSteps = 0
+        currentStepsRemaining = 0
         testModeStartTime = 0L
         
         // Stop foreground service
@@ -191,12 +194,16 @@ class AwtyEnginePlugin: FlutterPlugin, MethodCallHandler {
         if (baselineSteps == 0) {
             // First step update - establish baseline
             baselineSteps = currentSteps
+            currentStepsRemaining = goalSteps
             Log.d(TAG, "Android: Established baseline steps: $baselineSteps")
             return
         }
         
         val stepsTaken = max(0, currentSteps - baselineSteps)
         val stepsRemaining = max(0, goalSteps - stepsTaken)
+        
+        // Update the current steps remaining
+        currentStepsRemaining = stepsRemaining
         
         Log.d(TAG, "Android: Steps taken: $stepsTaken/$goalSteps, remaining: $stepsRemaining")
         
