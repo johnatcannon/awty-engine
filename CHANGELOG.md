@@ -1,6 +1,13 @@
 # Changelog
 
-## [2.0.0] - 2025-01-XX
+## [2.0.1] - 2025-10-14
+
+### Fixed
+- **Android Step Tracking**: Fixed `getStepsRemaining()` to return actual remaining steps instead of raw step count
+- **Notification Performance**: Simplified notifications to use static message, eliminating step count update overhead
+- **Code Cleanup**: Removed unused code (`_currentStepCount` and `_startBackupPolling`)
+
+## [2.0.0] - 2025-10-01
 
 ### Major Changes
 - **Complete Pedometer Rewrite**: Replaced HealthKit real-time tracking with pedometer package for iOS
