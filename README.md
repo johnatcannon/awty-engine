@@ -35,7 +35,7 @@ Add this to your package's `pubspec.yaml` file:
 
 ```yaml
 dependencies:
-  awty_engine: ^0.3.0
+  awty_engine: ^2.0.1
 ```
 
 ### 2. Platform Setup
