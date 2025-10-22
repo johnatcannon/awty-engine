@@ -1,5 +1,10 @@
 # Changelog
 
+## [2.0.2] - 2025-01-15
+
+### Changed
+- **Version Bump**: Updated version for pub.dev publication
+
 ## [2.0.1] - 2025-10-14
 
 ### Fixed
