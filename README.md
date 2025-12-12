@@ -46,13 +46,33 @@ Add the necessary permissions to your `android/app/src/main/AndroidManifest.xml`
 
 ```xml
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required: Foreground service for background step tracking -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_HEALTH" />
+    
+    <!-- Required: Activity recognition for step counting -->
     <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
+    
+    <!-- Required: Notification permission for Android 13+ (API 33+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    
     <application ...>
         ...
     </application>
 </manifest>
+```
+
+**Important:** On Android 13+ (API 33+), `POST_NOTIFICATIONS` must be requested at runtime:
+
+```dart
+import 'package:permission_handler/permission_handler.dart';
+
+// Request notification permission before starting tracking
+final notificationStatus = await Permission.notification.request();
+if (!notificationStatus.isGranted) {
+  print('Notification permission denied - notification may not appear');
+  // Foreground service will still work, but notification won't display
+}
 ```
 
 Place your small, monochrome notification icon (e.g., `barefoot.png`) in the `android/app/src/main/res/drawable` directory.

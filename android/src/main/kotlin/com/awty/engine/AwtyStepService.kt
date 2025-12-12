@@ -143,15 +143,38 @@ class AwtyStepService : Service() {
     }
 
     private fun createNotification(contentText: String): android.app.Notification {
-        val iconId = resources.getIdentifier(notificationIconName, "drawable", packageName)
-        val smallIcon = if (iconId != 0) iconId else applicationInfo.icon
+        // Get the app's package name (not the plugin's package)
+        val appPackageName = applicationContext.packageName
+        Log.d("AWTY_SERVICE", "Creating notification - Looking for icon: '$notificationIconName'")
+        Log.d("AWTY_SERVICE", "App package name: $appPackageName")
+        
+        // Try to find the icon in the app's resources
+        val iconId = resources.getIdentifier(notificationIconName, "drawable", appPackageName)
+        Log.d("AWTY_SERVICE", "Icon resource ID: $iconId (0 means not found, non-zero means found)")
+        
+        val smallIcon = if (iconId != 0) {
+            Log.d("AWTY_SERVICE", "✅ Using custom icon: $notificationIconName (ID: $iconId)")
+            iconId
+        } else {
+            Log.w("AWTY_SERVICE", "❌ Icon '$notificationIconName' not found in package $appPackageName")
+            Log.w("AWTY_SERVICE", "   Trying alternative: checking if icon exists in different resource types...")
+            // Try alternative resource types
+            val iconIdPng = resources.getIdentifier(notificationIconName, "drawable", appPackageName)
+            val iconIdMipmap = resources.getIdentifier(notificationIconName, "mipmap", appPackageName)
+            Log.d("AWTY_SERVICE", "   PNG drawable ID: $iconIdPng, Mipmap ID: $iconIdMipmap")
+            Log.w("AWTY_SERVICE", "   Using default app icon: ${applicationInfo.icon}")
+            applicationInfo.icon
+        }
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("$appName is tracking your steps")
             .setContentText(contentText)
             .setSmallIcon(smallIcon)
             .setOngoing(true)
             .build()
+        
+        Log.d("AWTY_SERVICE", "Notification created with smallIcon: $smallIcon")
+        return notification
     }
 
     private fun createNotificationChannel() {

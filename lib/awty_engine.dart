@@ -22,6 +22,10 @@ class AwtyEngine {
 
   /// Optional callback when goal reached (alternative to polling)
   static VoidCallback? _goalReachedCallback;
+  static bool _goalReachedCallbackFired = false;
+  
+  /// Optional callback for step count updates (for UI display)
+  static void Function(int stepsRemaining)? _stepUpdateCallback;
   
   /// Internal step tracking state - AWTY manages everything
   static int _goalSteps = 0;
@@ -54,6 +58,9 @@ class AwtyEngine {
       // Stop any existing tracking first
       await stopGoal();
       
+      // Reset callback fired flag for new goal
+      _goalReachedCallbackFired = false;
+      
       // Set up goal parameters
       _goalSteps = goalSteps;
       _isTracking = true;
@@ -66,9 +73,12 @@ class AwtyEngine {
         
         // Schedule test completion
         Timer(const Duration(seconds: 30), () {
-          if (_isTracking) {
+          if (_isTracking && !_goalReachedCallbackFired) {
             print('[AWTY] Test mode: Goal reached!');
-            _goalReachedCallback?.call();
+            _goalReachedCallbackFired = true; // Set flag immediately
+            final callbackToCall = _goalReachedCallback;
+            // Don't clear callback - it should persist for next goal
+            callbackToCall?.call();
             stopGoal();
           }
         });
@@ -124,15 +134,44 @@ class AwtyEngine {
   /// Optional callback when goal reached (alternative to polling)
   static void onGoalReached(VoidCallback callback) {
     _goalReachedCallback = callback;
+    _goalReachedCallbackFired = false; // Reset flag when setting new callback
     
-    // Set up native goal reached callback
+    // Set up native goal reached callback (only once, replaces previous handler)
     _channel.setMethodCallHandler((call) async {
-      if (call.method == 'onGoalReached') {
+      if (call.method == 'onGoalReached' || call.method == 'goalReached') {
+        // Prevent duplicate calls - only fire once per goal
+        if (_goalReachedCallbackFired) {
+          print('[AWTY] Goal reached callback already fired, ignoring duplicate');
+          return;
+        }
+        
         print('[AWTY] Native goal reached callback triggered');
-        _goalReachedCallback?.call();
+        _goalReachedCallbackFired = true; // Set flag immediately
+        final callbackToCall = _goalReachedCallback;
+        // Don't clear callback - it should persist for next goal
+        callbackToCall?.call();
         await stopGoal();
       }
     });
+  }
+  
+  /// Clear the goal reached callback
+  static void clearGoalReachedCallback() {
+    _goalReachedCallback = null;
+    _goalReachedCallbackFired = false;
+  }
+  
+  /// Optional callback for step count updates (for UI display)
+  /// Called whenever the step count changes during tracking
+  static void onStepUpdate(void Function(int stepsRemaining) callback) {
+    _stepUpdateCallback = callback;
+    print('[AWTY] Step update callback registered');
+  }
+  
+  /// Clear the step update callback
+  static void clearStepUpdateCallback() {
+    _stepUpdateCallback = null;
+    print('[AWTY] Step update callback cleared');
   }
 
   /// Clean up for next goal
@@ -157,6 +196,9 @@ class AwtyEngine {
     // Cancel backup polling timer
     _backupPollingTimer?.cancel();
     _backupPollingTimer = null;
+    
+    // Note: Don't clear step update callback here - app may want to keep it for next goal
+    // Apps should call clearStepUpdateCallback() explicitly if needed
     
     print('[AWTY] Goal stopped and cleaned up');
   }
@@ -204,23 +246,50 @@ class AwtyEngine {
   /// Start pedometer tracking and set baseline step count (Android + fallback)
   static Future<void> _startPedometerTracking() async {
     try {
-      // Get initial step count as baseline
-      final stepCount = await _getCurrentStepCount();
-      _baselineSteps = stepCount;
+      print('[AWTY] _startPedometerTracking called - isTracking=$_isTracking, goalSteps=$_goalSteps');
       
-      print('[AWTY] Setting up pedometer stream listener...');
+      // Cancel any existing subscription first
+      await _stepCountSubscription?.cancel();
+      _stepCountSubscription = null;
       
-      // Start monitoring step changes
+      // Reset baseline - will be set from first stream event
+      _baselineSteps = 0;
+      bool baselineSet = false;
+      
+      // Send initial step update immediately (no waiting!)
+      if (_isTracking && !_testMode && _goalSteps > 0) {
+        final initialStepsRemaining = _goalSteps;
+        print('[AWTY] Sending initial step update: $initialStepsRemaining steps remaining');
+        if (_stepUpdateCallback != null) {
+          _stepUpdateCallback!.call(initialStepsRemaining);
+          print('[AWTY] ✅ Initial step update callback called');
+        } else {
+          print('[AWTY] ⚠️ Step update callback is null!');
+        }
+      }
+      
+      // Start monitoring step changes immediately (no waiting for baseline)
       _stepCountSubscription = Pedometer.stepCountStream.listen(
         (StepCount event) {
           print('[AWTY] 🚶 Pedometer stream event: steps=${event.steps}, isTracking=$_isTracking, testMode=$_testMode');
           
           if (_isTracking && !_testMode) {
             final currentSteps = event.steps;
+            
+            // Set baseline from first event (if not already set)
+            if (!baselineSet) {
+              _baselineSteps = currentSteps;
+              baselineSet = true;
+              print('[AWTY] Baseline set from first stream event: $_baselineSteps steps');
+            }
+            
             final stepsTaken = (currentSteps - _baselineSteps).clamp(0, _goalSteps);
             final stepsRemaining = (_goalSteps - stepsTaken).clamp(0, _goalSteps);
             
             print('[AWTY] Step update: current=$currentSteps, baseline=$_baselineSteps, taken=$stepsTaken, remaining=$stepsRemaining');
+            
+            // Notify app of step count update (for UI display)
+            _stepUpdateCallback?.call(stepsRemaining);
             
             // Send step count to native plugin for both platforms
             if (Platform.isAndroid) {
@@ -235,8 +304,17 @@ class AwtyEngine {
             
             // Check if goal reached
             if (stepsRemaining == 0 && _goalSteps > 0) {
+              // Prevent duplicate callbacks - only fire once per goal
+              if (_goalReachedCallbackFired) {
+                print('[AWTY] Goal already reached, ignoring duplicate pedometer stream trigger');
+                return;
+              }
+              
               print('[AWTY] 🎉 Goal reached via pedometer stream!');
-              _goalReachedCallback?.call();
+              _goalReachedCallbackFired = true; // Set flag immediately
+              final callbackToCall = _goalReachedCallback;
+              // Don't clear callback - it should persist for next goal
+              callbackToCall?.call();
               stopGoal();
             }
           } else {
@@ -248,25 +326,13 @@ class AwtyEngine {
         },
       );
       
-      print('[AWTY] Pedometer tracking started. Baseline: $_baselineSteps steps, stream listener active');
+      print('[AWTY] Pedometer tracking started. Stream listener active (baseline will be set from first event)');
     } catch (e) {
       print('[AWTY] Failed to start pedometer tracking: $e');
       throw Exception('Failed to start step tracking: $e');
     }
   }
   
-  /// Get current step count from pedometer
-  static Future<int> _getCurrentStepCount() async {
-    try {
-      // Get current step count - this is a one-time reading
-      final stepCount = await Pedometer.stepCountStream.first;
-      print('[AWTY] 📊 Polling pedometer: current=${stepCount.steps} steps');
-      return stepCount.steps;
-    } catch (e) {
-      print('[AWTY] ❌ Failed to get current step count: $e');
-      return 0;
-    }
-  }
   
   /// Initialize AWTY - no longer needed but kept for compatibility
   static Future<void> initialize() async {

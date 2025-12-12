@@ -329,22 +329,21 @@ public class AwtyEnginePlugin: NSObject, FlutterPlugin {
   }
   
   /// Calculate handicap using HealthKit data with fallback to existing handicap
+  /// Uses the LARGER of: player-entered average OR system 30-day average
   private func calculateHandicap(dailyAverage: Double, existingHandicap: Double) -> Double {
-    let minHandicap = 0.3
-    let threshold = 3000.0
+    let minHandicap = 0.5
     let divisor = 10000.0
     
-    if dailyAverage < threshold {
-      // Use existing handicap from player_profile (new phone, limited data, etc.)
-      let finalHandicap = max(existingHandicap, minHandicap)
-      print("AWTY iOS: Using existing handicap: \(finalHandicap) (daily average \(dailyAverage) < \(threshold))")
-      return finalHandicap
-    } else {
-      // Calculate new handicap from HealthKit data
-      let calculatedHandicap = dailyAverage / divisor
-      let finalHandicap = max(calculatedHandicap, minHandicap)
-      print("AWTY iOS: Calculated handicap: \(finalHandicap) from daily average: \(dailyAverage)")
-      return finalHandicap
-    }
+    // Calculate handicap from system data
+    let systemHandicap = dailyAverage / divisor
+    
+    // Use the larger of system or existing (player-entered) handicap
+    let calculatedHandicap = max(systemHandicap, existingHandicap)
+    
+    // Ensure minimum handicap
+    let finalHandicap = max(calculatedHandicap, minHandicap)
+    
+    print("AWTY iOS: System handicap: \(systemHandicap), Existing: \(existingHandicap), Final: \(finalHandicap)")
+    return finalHandicap
   }
 }

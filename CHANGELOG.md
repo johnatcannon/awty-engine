@@ -1,5 +1,35 @@
 # Changelog
 
+## [2.1.0] - 2025-12-06
+
+### Added
+- **Step Update Callback API**: New `onStepUpdate()` callback for real-time step count updates
+  - Apps can subscribe to step count changes without polling
+  - Eliminates need for apps to poll `getStepsRemaining()` every 2 seconds
+  - Callback fires whenever pedometer stream updates (cross-platform)
+- **Callback Management**: New `clearStepUpdateCallback()` method for cleanup
+- **Enhanced Logging**: Detailed Android notification icon lookup debugging
+
+### Fixed
+- **Duplicate Callback Prevention**: Improved protection against duplicate goal reached callbacks
+  - Added `_goalReachedCallbackFired` flag to prevent multiple triggers
+  - Prevents race conditions between pedometer stream and native callbacks
+- **iOS Handicap Calculation**: Improved handicap calculation logic
+  - Now uses the larger of: system 30-day average OR player-entered handicap
+  - Ensures players aren't penalized if system data is incomplete
+  - Minimum handicap increased from 0.3 to 0.5
+
+### Changed
+- **Android Icon Lookup**: Enhanced icon resource lookup with better error messages
+  - Uses `applicationContext.packageName` instead of plugin package name
+  - Added detailed logging to debug icon loading issues
+
+### Technical Details
+- **Cross-Platform**: `onStepUpdate()` works on both Android and iOS via pedometer stream
+- **Performance**: Eliminates polling overhead - apps receive updates only when steps change
+- **Backward Compatible**: Existing apps continue to work without changes
+- **Notification Permission**: Apps must request `POST_NOTIFICATIONS` on Android 13+ for notification to display
+
 ## [2.0.2] - 2025-01-15
 
 ### Changed
